@@ -4,6 +4,7 @@
 *.png
 *.npy
 *.pyc
+*.csv
 plots/*
 math-rollouts/
 math-rollouts_test/

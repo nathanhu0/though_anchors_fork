@@ -426,9 +426,16 @@ def get_vertical_scores(
         vert_lines = avg_mat[i + proximity_ignore :, i]
 
         if score_type == "mean":
-            vert_score = np.nanmean(vert_lines)
+            if len(vert_lines) == 0:
+                # prevents "RuntimeWarning: Mean of empty slice"
+                vert_score = np.nan 
+            else:
+                vert_score = np.nanmean(vert_lines)
         elif score_type == "median":
-            vert_score = np.nanmedian(vert_lines)
+            if len(vert_lines) == 0:
+                vert_score = np.nan
+            else:
+                vert_score = np.nanmedian(vert_lines)
         else:
             raise ValueError(f"Unknown score_type: {score_type}")
 

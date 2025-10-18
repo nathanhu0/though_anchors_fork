@@ -22,7 +22,6 @@ def plot_kurt_data(args):
         proximity_ignore=args.proximity_ignore,
         control_depth=args.control_depth,
     )
-    print(f"{kurts.shape=}")
 
     # kurts[:, 0, :] is already set to NaN in get_kurt_matrix
 
@@ -43,13 +42,17 @@ def plot_kurt_data(args):
 
     fig = plt.figure(figsize=tuple(args.scatter_figsize))
 
-    plt.scatter(layer_l, kurt_l, color=args.color, alpha=args.alpha, s=args.scatter_size)
+    plt.scatter(
+        layer_l, kurt_l, color=args.color, alpha=args.alpha, s=args.scatter_size
+    )
 
     n_layers, _ = model2layers_heads(args.model_name)
     plt.xlim(0, n_layers)
     plt.xlabel("Layer", labelpad=7)
     plt.ylabel("Kurtosis", labelpad=7)
-    plt.title("Kurtosis of each attention head's\nvertical score", fontsize=12, pad=0)
+    plt.title(
+        "Kurtosis of each attention head's\nvertical score", fontsize=12, pad=0
+    )
 
     plt.gca().spines[["top", "right"]].set_visible(False)
 
@@ -66,7 +69,12 @@ def plot_kurt_data(args):
     fig = plt.figure(figsize=tuple(args.hist_figsize))
     flat = kurt.flatten()
     plt.rcParams["font.size"] = args.hist_font_size
-    plt.hist(flat, bins=args.hist_bins, color=args.color, range=tuple(args.hist_range))
+    plt.hist(
+        flat,
+        bins=args.hist_bins,
+        color=args.color,
+        range=tuple(args.hist_range),
+    )
     plt.xlim(-1, None)
     plt.title(
         "Histogram of attention head\nvertical score kurtoses",
@@ -87,31 +95,84 @@ def plot_kurt_data(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Plot kurtosis statistics for attention heads")
-    
+    parser = argparse.ArgumentParser(
+        description="Plot kurtosis statistics for attention heads"
+    )
+
     # Model configuration
-    parser.add_argument("--model-name", type=str, default="qwen-14b", help="Model name")
-    parser.add_argument("--proximity-ignore", type=int, default=4, help="Proximity ignore for vertical scores")
-    parser.add_argument("--control-depth", action="store_true", help="Control for depth")
-    
+    parser.add_argument(
+        "--model-name", type=str, default="qwen-15b", help="Model name"
+    )
+    parser.add_argument(
+        "--proximity-ignore",
+        type=int,
+        default=4,
+        help="Proximity ignore for vertical scores",
+    )
+    parser.add_argument(
+        "--control-depth", action="store_true", help="Control for depth"
+    )
+
     # Scatter plot settings
-    parser.add_argument("--scatter-figsize", type=float, nargs=2, default=[4.5, 3.5], help="Figure size for scatter plot (width height)")
-    parser.add_argument("--scatter-font-size", type=int, default=11, help="Font size for scatter plot")
-    parser.add_argument("--scatter-size", type=int, default=20, help="Size of scatter points")
-    parser.add_argument("--alpha", type=float, default=0.25, help="Alpha for scatter points")
-    parser.add_argument("--color", type=str, default="dodgerblue", help="Color for plots")
-    
+    parser.add_argument(
+        "--scatter-figsize",
+        type=float,
+        nargs=2,
+        default=[4.5, 3.5],
+        help="Figure size for scatter plot (width height)",
+    )
+    parser.add_argument(
+        "--scatter-font-size",
+        type=int,
+        default=11,
+        help="Font size for scatter plot",
+    )
+    parser.add_argument(
+        "--scatter-size", type=int, default=20, help="Size of scatter points"
+    )
+    parser.add_argument(
+        "--alpha", type=float, default=0.25, help="Alpha for scatter points"
+    )
+    parser.add_argument(
+        "--color", type=str, default="dodgerblue", help="Color for plots"
+    )
+
     # Histogram settings
-    parser.add_argument("--hist-figsize", type=float, nargs=2, default=[3, 3.5], help="Figure size for histogram (width height)")
-    parser.add_argument("--hist-font-size", type=int, default=12, help="Font size for histogram")
-    parser.add_argument("--hist-bins", type=int, default=80, help="Number of bins for histogram")
-    parser.add_argument("--hist-range", type=float, nargs=2, default=[0, 40], help="Range for histogram")
-    
+    parser.add_argument(
+        "--hist-figsize",
+        type=float,
+        nargs=2,
+        default=[3, 3.5],
+        help="Figure size for histogram (width height)",
+    )
+    parser.add_argument(
+        "--hist-font-size", type=int, default=12, help="Font size for histogram"
+    )
+    parser.add_argument(
+        "--hist-bins", type=int, default=80, help="Number of bins for histogram"
+    )
+    parser.add_argument(
+        "--hist-range",
+        type=float,
+        nargs=2,
+        default=[0, 40],
+        help="Range for histogram",
+    )
+
     # Output settings
-    parser.add_argument("--output-dir", type=str, default="plots/kurt_plots", help="Output directory")
-    parser.add_argument("--dpi", type=int, default=300, help="DPI for saved figures")
-    parser.add_argument("--show", action="store_true", help="Show plots interactively")
-    
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="plots/kurt_plots",
+        help="Output directory",
+    )
+    parser.add_argument(
+        "--dpi", type=int, default=300, help="DPI for saved figures"
+    )
+    parser.add_argument(
+        "--show", action="store_true", help="Show plots interactively"
+    )
+
     args = parser.parse_args()
-    
+
     plot_kurt_data(args)

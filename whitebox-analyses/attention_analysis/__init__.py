@@ -25,7 +25,6 @@ from .receiver_head_funcs import (
 
 from .attn_supp_funcs import (
     get_suppression_KL_matrix,
-    plot_sentence_suppression_impact,
 )
 
 from .tokenizer_funcs import (
@@ -46,7 +45,6 @@ __all__ = [
     "get_top_k_receiver_heads",
     # attn_supp_funcs
     "get_suppression_KL_matrix",
-    "plot_sentence_suppression_impact",
     # tokenizer_funcs
     "get_tokenizer",
     "get_raw_tokens",

@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from typing import Dict, List, Tuple, Optional
 import torch
 import matplotlib.pyplot as plt
@@ -7,6 +8,9 @@ import numpy as np
 from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
+
+# Add parent directory to path to import attention_analysis
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from attention_analysis.attn_supp_funcs import get_suppression_KL_matrix
 from attention_analysis.receiver_head_funcs import (
@@ -153,7 +157,6 @@ if __name__ == "__main__":
     results = process_all_problems_kl(
         model_name=model_name,
         p_nucleus=p_nucleus,
-        plot_sentences=plot_sentences,
         only_first=only_first,
         take_log=take_log,
         save_results=True,

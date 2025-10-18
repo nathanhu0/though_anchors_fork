@@ -80,7 +80,7 @@ if __name__ == "__main__":
     kurts_second_l = np.array(kurts_second_l)
 
     r, p = stats.pearsonr(kurts_first_l, kurts_second_l)
-    print(f"Reliability: {r=:.2f}, {p=:.4f}")
+    print(f"Reliability: r={r:.2f}, p={p:.4f}")
 
     plt.rcParams["font.size"] = args.font_size
 
