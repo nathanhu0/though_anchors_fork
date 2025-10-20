@@ -41,6 +41,7 @@ MODEL_ARCHITECTURES: Dict[str, ModelArchitecture] = {
     "llama8": ModelArchitecture(32, 32),
     "llama8-base": ModelArchitecture(32, 32),
     "llama-v3p1-8b": ModelArchitecture(32, 32, "32 layers, 32 attention heads"),
+    "llama-8b": ModelArchitecture(32, 32),
     
     # GPT models
     "gpt-oss-20b": ModelArchitecture(48, 48, "48 layers, 48 attention heads (estimated for 20B model)"),
@@ -71,6 +72,7 @@ MODEL_PATHS: Dict[str, ModelPath] = {
     "llama8": ModelPath("deepseek-ai/DeepSeek-R1-Distill-Llama-8B"),
     "llama8-base": ModelPath("meta-llama/Llama-3.1-8B"),
     "llama-v3p1-8b": ModelPath("meta-llama/Meta-Llama-3.1-8B-Instruct"),
+    "llama-8b": ModelPath("deepseek-ai/DeepSeek-R1-Distill-Llama-8B"),
     
     # GPT models
     "gpt-oss-20b": ModelPath("openai/gpt-oss-20b"),

@@ -219,6 +219,8 @@ def get_all_problems_vert_scores(
         dir_ci = os.path.join(dir_root, ci)
         problems = os.listdir(dir_ci)
         for idx_problem, problem in enumerate(problems):
+            if problem == 'problem_3935': # 13k tokens long, too intense on the RAM/VRAM
+                continue
             text, sentences_w_spacing = get_problem_text_sentences(problem, is_correct, model_name)
 
             # The model will be run.

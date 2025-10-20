@@ -17,6 +17,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from tqdm import tqdm
+from scipy import stats
 
 # Add parent directory to path to import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -72,6 +73,11 @@ def get_all_problems_list(
     correct_dir = os.path.join(dir_root, "correct_base_solution")
     if os.path.exists(correct_dir):
         for problem_dir in os.listdir(correct_dir):
+            if (
+                "problem_3935" in problem_dir
+            ):  # 13k tokens long, too intense on the RAM/VRAM
+                continue
+
             if problem_dir.startswith("problem_"):
                 problem_num = int(problem_dir.replace("problem_", ""))
                 problems_list.append((problem_num, True))
@@ -80,6 +86,10 @@ def get_all_problems_list(
     incorrect_dir = os.path.join(dir_root, "incorrect_base_solution")
     if os.path.exists(incorrect_dir):
         for problem_dir in os.listdir(incorrect_dir):
+            if (
+                "problem_3935" in problem_dir
+            ):  # 13k tokens long, too intense on the RAM/VRAM
+                continue
             if problem_dir.startswith("problem_"):
                 problem_num = int(problem_dir.replace("problem_", ""))
                 problems_list.append((problem_num, False))
@@ -112,7 +122,9 @@ def detect_convergence(
     fp_chunks_labeled = os.path.join(dir_problem, "chunks_labeled.json")
 
     if not os.path.exists(fp_chunks_labeled):
-        print(f"Warning: chunks_labeled.json not found for problem {problem_num} ({ci})")
+        print(
+            f"Warning: chunks_labeled.json not found for problem {problem_num} ({ci})"
+        )
         return []
 
     with open(fp_chunks_labeled, "r") as f:
@@ -126,7 +138,7 @@ def detect_convergence(
     convergence_idx = n_chunks  # Default to no convergence
 
     for i in range(n_chunks - convergence_window + 1):
-        window_accuracies = accuracies[i:i + convergence_window]
+        window_accuracies = accuracies[i : i + convergence_window]
 
         # Check if all accuracies in window are above high threshold
         if all(acc > high_threshold for acc in window_accuracies):
@@ -142,7 +154,7 @@ def detect_convergence(
     # Note: we exclude the last chunk (final answer) so we have n_chunks - 1 sentences
     pre_convergence = [i < convergence_idx for i in range(n_chunks - 1)]
 
-    return pre_convergence
+    return pre_convergence, accuracies
 
 
 def calculate_receiver_head_scores_for_problem(
@@ -159,7 +171,7 @@ def calculate_receiver_head_scores_for_problem(
     """
     # Get problem text and sentences
     text, sentences_w_spacing = get_problem_text_sentences(
-        problem_num, is_correct, "qwen-14b"
+        problem_num, is_correct, model_name
     )  # Load from qwen-14b data
 
     # Get top k receiver heads (these are the most important attention heads)
@@ -230,7 +242,9 @@ def generate_receiver_head_csvs(
             labels = get_taxonomic_labels(problem_num, is_correct, data_model)
 
             # Detect convergence for each sentence
-            pre_convergence = detect_convergence(problem_num, is_correct, data_model)
+            pre_convergence, accuracies = detect_convergence(
+                problem_num, is_correct, data_model
+            )
 
             # Calculate receiver head scores
             rec_head_scores = calculate_receiver_head_scores_for_problem(
@@ -269,14 +283,34 @@ def generate_receiver_head_csvs(
                 )
                 # Pad with True (assume pre-convergence) if needed
                 if len(pre_convergence) < n_sentences:
-                    pre_convergence.extend([True] * (n_sentences - len(pre_convergence)))
+                    pre_convergence.extend(
+                        [True] * (n_sentences - len(pre_convergence))
+                    )
                 else:
                     pre_convergence = pre_convergence[:n_sentences]
 
             # Create rows for each sentence
-            for idx, (sentence, label_list, score, is_pre_conv) in enumerate(
-                zip(sentences_w_spacing, labels, rec_head_scores, pre_convergence)
+            prior_acc = None
+            for idx, (
+                sentence,
+                label_list,
+                score,
+                is_pre_conv,
+                accuracy,
+            ) in enumerate(
+                zip(
+                    sentences_w_spacing,
+                    labels,
+                    rec_head_scores,
+                    pre_convergence,
+                    accuracies,
+                )
             ):
+                if prior_acc is not None:
+                    simple_importance = abs(accuracy - prior_acc)
+                else:
+                    simple_importance = None
+                prior_acc = accuracy
                 row = {
                     "problem_number": problem_num,
                     "is_correct": is_correct,
@@ -289,7 +323,10 @@ def generate_receiver_head_csvs(
                         "|".join(label_list) if label_list else "none"
                     ),  # Join labels with |
                     "pre_convergence": is_pre_conv,  # Add convergence status
+                    "accuracy": accuracy,  # Add accuracy
+                    "simple_importance": simple_importance,  # Add simple importance
                 }
+
                 all_data.append(row)
 
         except Exception as e:
@@ -303,14 +340,18 @@ def generate_receiver_head_csvs(
 
     # Save to CSV files
     # Save all data
-    all_data_path = output_path / f"receiver_head_scores_all_{model_name}_k{top_k}.csv"
+    all_data_path = (
+        output_path
+        / f"receiver_head_scores_all_{model_name}_k{top_k}_pi{proximity_ignore}.csv"
+    )
     df.to_csv(all_data_path, index=False)
     print(f"Saved all data to {all_data_path}")
 
     # Save correct solutions only
     df_correct = df[df["is_correct"] == True]
     correct_path = (
-        output_path / f"receiver_head_scores_correct_{model_name}_k{top_k}.csv"
+        output_path
+        / f"receiver_head_scores_correct_{model_name}_k{top_k}_pi{proximity_ignore}.csv"
     )
     df_correct.to_csv(correct_path, index=False)
     print(f"Saved correct solutions to {correct_path}")
@@ -318,7 +359,8 @@ def generate_receiver_head_csvs(
     # Save incorrect solutions only
     df_incorrect = df[df["is_correct"] == False]
     incorrect_path = (
-        output_path / f"receiver_head_scores_incorrect_{model_name}_k{top_k}.csv"
+        output_path
+        / f"receiver_head_scores_incorrect_{model_name}_k{top_k}_pi{proximity_ignore}.csv"
     )
     df_incorrect.to_csv(incorrect_path, index=False)
     print(f"Saved incorrect solutions to {incorrect_path}")
@@ -337,7 +379,10 @@ def generate_receiver_head_csvs(
     }
 
     # Save summary statistics
-    summary_path = output_path / f"receiver_head_summary_{model_name}_k{top_k}.json"
+    summary_path = (
+        output_path
+        / f"receiver_head_summary_{model_name}_k{top_k}_pi{proximity_ignore}.json"
+    )
     with open(summary_path, "w") as f:
         json.dump(summary_stats, f, indent=2)
     print(f"Saved summary statistics to {summary_path}")
@@ -354,26 +399,26 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model-name",
         type=str,
-        default="qwen-15b",
-        help="Model name for analysis (default: qwen-15b)",
+        default="qwen-14b",
+        help="Model name for analysis",
     )
     parser.add_argument(
         "--data-model",
         type=str,
         default="qwen-14b",
-        help="Model name for data source (default: qwen-14b)",
+        help="Model name for data source",
     )
     parser.add_argument(
         "--top-k",
         type=int,
         default=32,
-        help="Number of top receiver heads to use (default: 16)",
+        help="Number of top receiver heads to use",
     )
     parser.add_argument(
         "--proximity-ignore",
         type=int,
-        default=4,
-        help="Proximity ignore for vertical scores (default: 4)",
+        default=16,
+        help="Proximity ignore for vertical scores",
     )
     parser.add_argument(
         "--control-depth",
@@ -384,7 +429,7 @@ if __name__ == "__main__":
         "--output-dir",
         type=str,
         default="csvs",
-        help="Output directory for CSV files (default: csvs)",
+        help="Output directory for CSV files",
     )
     parser.add_argument(
         "--max-problems",

@@ -9,6 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from attention_analysis.receiver_head_funcs import (
     get_3d_ar_kurtosis,
     get_all_problems_vert_scores,
+    get_top_k_receiver_heads,
 )
 
 
@@ -51,78 +52,61 @@ if __name__ == "__main__":
     parser.add_argument("--xlim", type=float, nargs=2, default=[-1, 42], help="X-axis limits")
     parser.add_argument("--ylim", type=float, nargs=2, default=[-1, 42], help="Y-axis limits")
     parser.add_argument("--tick-interval", type=int, default=10, help="Interval between ticks")
-    
+    parser.add_argument("--top-k", type=int, default=32, help="Top-k for the receiver heads")
+
     args = parser.parse_args()
     
-    kurts = get_kurt_matrix(args.model_name, args.proximity_ignore, args.control_depth)
-
-    layers = np.arange(1, kurts.shape[1])
-    heads = np.arange(kurts.shape[2])
-
-    n_pn = kurts.shape[0]
-    pn_cutoff = n_pn // 2
-
-    kurts_first_half = kurts[::2, :, :]
-    kurts_second_half = kurts[1::2, :, :]
-
-    kurts_first_l = []
-    kurts_second_l = []
-
-    for layer in layers:
-        for head in heads:
-            kurt_first_half = kurts_first_half[:, layer, head]
-            kurt_second_half = kurts_second_half[:, layer, head]
-
-            kurts_first_l.append(np.mean(kurt_first_half))
-            kurts_second_l.append(np.mean(kurt_second_half))
-
-    kurts_first_l = np.array(kurts_first_l)
-    kurts_second_l = np.array(kurts_second_l)
-
-    r, p = stats.pearsonr(kurts_first_l, kurts_second_l)
-    print(f"Reliability: r={r:.2f}, p={p:.4f}")
-
-    plt.rcParams["font.size"] = args.font_size
-
-    fig = plt.figure(figsize=tuple(args.figsize))
-
-    plt.scatter(kurts_first_l, kurts_second_l, color="dodgerblue", alpha=args.alpha, s=args.marker_size)
-
-    # Add line of best fit - using fixed endpoints
-    z = np.polyfit(kurts_first_l, kurts_second_l, 1)
-    slope, intercept = z
-
-    # Create line using the min and max of x-axis for consistent endpoints
-    x_min, x_max = plt.xlim()
-    x_line = np.array([x_min, x_max])
-    y_line = slope * x_line + intercept
-
-    plt.plot(x_line, y_line, "k--", alpha=0.7, linewidth=1.5)
-
-    plt.text(
-        0.6,
-        0.7,
-        f"r = {r:.2f}",
-        transform=plt.gca().transAxes,
-        bbox=dict(facecolor="white", alpha=0.8, edgecolor="none"),
+    resp_layer_head_verts, _ = get_all_problems_vert_scores(
+        model_name=args.model_name,
+        proximity_ignore=args.proximity_ignore,
+        control_depth=args.control_depth,
     )
 
-    plt.axis("square")
-    plt.xlim(args.xlim)
-    plt.ylim(args.ylim)
-    plt.xticks(np.arange(args.xlim[0], args.xlim[1] + 1, args.tick_interval))
-    plt.yticks(np.arange(args.ylim[0], args.ylim[1] + 1, args.tick_interval))
-    plt.gca().spines[["top", "right"]].set_visible(False)
+    top_k_layer_head = get_top_k_receiver_heads(
+        model_name=args.model_name,
+        top_k=args.top_k,
+        proximity_ignore=args.proximity_ignore,
+        control_depth=args.control_depth,
+    )
 
-    plt.xlabel("First half kurtosis", labelpad=7)
-    plt.ylabel("Second half kurtosis", labelpad=7)
-    plt.title("Split-half reliability assessment", fontsize=12, pad=10)
+    M_corrs = []
+    for i in range(len(resp_layer_head_verts)):
+        layer_head_verts = resp_layer_head_verts[i]
+        vert_scores = layer_head_verts[top_k_layer_head[:, 0], top_k_layer_head[:, 1]]
+        vert_scores = vert_scores[:, :args.proximity_ignore] # drop nans at end
+        resp_i_corrs = np.corrcoef(vert_scores)
+        resp_i_corrs[np.diag_indices_from(resp_i_corrs)] = np.nan
+        M_corr = np.nanmean(resp_i_corrs)
+        if np.isnan(M_corr): # CoT is smaller than proximity ignore
+            continue
+        M_corrs.append(M_corr)
+
+    GM_corrs = np.mean(M_corrs)
+    print(f'Overall mean correlation: {GM_corrs:.3f}')
     
-    from pathlib import Path
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     
-    fp_out = output_dir / f"reliability_{args.model_name}_pi{args.proximity_ignore}.png"
-    plt.subplots_adjust(bottom=0.17, top=0.8, left=0.1, right=0.95)
-    plt.savefig(fp_out, dpi=args.dpi)
-    plt.show()
+    num_layers = 48
+    num_heads = 40
+    all_heads = np.mgrid[0:num_layers, 0:num_heads].reshape(2, -1).T
+    # Equivalent to: 
+    # top_k_layer_head = []
+    # for i in range(num_layers):
+    #     for k in range(num_heads):
+    #         top_k_layer_head.append([i, k])
+    # all_heads = np.array(top_k_layer_head)
+
+    M_corrs = []
+    for i in range(len(resp_layer_head_verts)):
+        layer_head_verts = resp_layer_head_verts[i]
+        vert_scores = layer_head_verts[all_heads[:, 0], all_heads[:, 1]]
+        vert_scores = vert_scores[:, :args.proximity_ignore] # drop nans at end
+        resp_i_corrs = np.corrcoef(vert_scores)
+        resp_i_corrs[np.diag_indices_from(resp_i_corrs)] = np.nan
+        M_corr = np.nanmean(resp_i_corrs)
+        if np.isnan(M_corr): # CoT is smaller than proximity ignore
+            continue
+        M_corrs.append(M_corr)
+
+
+    GM_corrs = np.mean(M_corrs)
+    print(f'All-head mean correlation: {GM_corrs:.3f}')

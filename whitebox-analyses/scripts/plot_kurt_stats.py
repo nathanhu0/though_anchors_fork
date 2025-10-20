@@ -23,9 +23,7 @@ def plot_kurt_data(args):
         control_depth=args.control_depth,
     )
 
-    # kurts[:, 0, :] is already set to NaN in get_kurt_matrix
-
-    kurt = np.mean(kurts, axis=0)
+    kurt = np.median(kurts, axis=0)
 
     layer_l = []
     kurt_l = []
@@ -101,12 +99,16 @@ if __name__ == "__main__":
 
     # Model configuration
     parser.add_argument(
-        "--model-name", type=str, default="qwen-15b", help="Model name"
+        "--model-name", type=str, default="qwen-14b", help="Model name"
     )
+
+    # parser.add_argument(
+    #     "--model-name", type=str, default="llama-8b", help="Model name"
+    # )
     parser.add_argument(
         "--proximity-ignore",
         type=int,
-        default=4,
+        default=16,
         help="Proximity ignore for vertical scores",
     )
     parser.add_argument(
@@ -170,7 +172,10 @@ if __name__ == "__main__":
         "--dpi", type=int, default=300, help="DPI for saved figures"
     )
     parser.add_argument(
-        "--show", action="store_true", help="Show plots interactively"
+        "--show",
+        action="store_true",
+        help="Show plots interactively",
+        default=False,
     )
 
     args = parser.parse_args()

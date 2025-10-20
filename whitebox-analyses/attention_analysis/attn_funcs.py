@@ -272,19 +272,37 @@ def compute_all_attention_matrices(
     if verbose:
         print(f"Computing attention matrices for {text_id}...")
 
+
     # Check text length and adjust device if needed
     tokens = get_raw_tokens(text, model_name)
 
-    if os.name == "nt":  # This was related to debugging and testing small models.
-        if verbose:
-            print("Running on Windows, using CPU") 
+    # if os.name == "nt":  # This was related to debugging and testing small models.
+    #     if verbose:
+    #         print("Running on Windows, using CPU") 
+    #     device_map = "cpu"
+
+    if (
+        os.name == "nt"
+    ):  # This was related to debugging and testing small models.
+        if verbose or True:
+            print(f"Running on Windows, using CPU ({len(tokens)=})")
         device_map = "cpu"
+        import torch
+        torch.backends.cudnn.benchmark = False  # For CPU
+        torch.set_num_threads(os.cpu_count())  # Max CPU threads
+    elif len(tokens) > 3000:
+        if verbose or True:
+            print(f"Using CPU for long sequence ({len(tokens)=}):")
+        device_map = "cpu"
+        import torch
+        torch.backends.cudnn.benchmark = False  # For CPU
+        torch.set_num_threads(os.cpu_count())  # Max CPU threads
 
     result = analyze_text(
         text,
         model_name=model_name,
         verbose=verbose,
-        float32=model_name == "qwen-15b",
+        float32=True,#model_name == "qwen-15b",
         attn_layers=None,
         return_logits=False,
         device_map=device_map,
@@ -352,6 +370,7 @@ def get_avg_attention_matrix(
             return np.load(cache_path)
 
     if cache_dir and text_id:
+        # print(f"Computing attention matrices for {text_id}...")
         success = compute_all_attention_matrices(
             text=text,
             model_name=model_name,
@@ -366,6 +385,8 @@ def get_avg_attention_matrix(
             cache_path = get_cache_path(cache_dir, text_id, model_name, layer, head)
             if os.path.exists(cache_path):
                 return np.load(cache_path)
+    # print('end')
+    # quit()
 
     matrix = get_attention_matrix(text, model_name, layer, head, device_map)
 

@@ -92,6 +92,7 @@ def plot_receiver_taxonomy(
     output_dir: str = "plots",
     tags_to_plot: Optional[List[str]] = None,
     pre_convergence_only: bool = False,
+    proximity_ignore: int = 4,
 ):
     """
     Plot receiver head scores by taxonomic category.
@@ -110,7 +111,7 @@ def plot_receiver_taxonomy(
 
     # Load the CSV file
     csv_path = (
-        Path(csv_dir) / f"receiver_head_scores_all_{model_name}_k{top_k}.csv"
+        Path(csv_dir) / f"receiver_head_scores_all_{model_name}_k{top_k}_pi{proximity_ignore}.csv"
     )
     if not csv_path.exists():
         print(f"Error: CSV file not found: {csv_path}")
@@ -136,7 +137,6 @@ def plot_receiver_taxonomy(
             "active_computation",
             "uncertainty_management",
             "result_consolidation",
-            "self_checking",
         ]
 
     # Filter to only include specified tags
@@ -349,18 +349,19 @@ def plot_receiver_taxonomy(
     plt.gca().spines[["top", "right"]].set_visible(False)
 
     # Add title
-    model_display = "Qwen-15B" if "qwen" in model_name.lower() else model_name
+    model_display = "Qwen-14B" if "qwen" in model_name.lower() else model_name
     plt.title(
-        f"Receiver-head scores by sentence category ({model_display}, k={top_k})",
+        f"Receiver-head scores by sentence category",# ({model_display}, k={top_k})",
         fontsize=11,
     )
+    plt.ylim(0, 0.00042)
 
     # Save figure
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     suffix = "_pre_conv" if pre_convergence_only else ""
     fp_out = (
-        output_path / f"receiver_taxonomy_{model_name}_k{top_k}{suffix}.png"
+        output_path / f"receiver_taxonomy_{model_name}_k{top_k}{suffix}_pi{proximity_ignore}.png"
     )
 
     plt.subplots_adjust(bottom=0.2, top=0.85, left=0.12, right=0.95)
@@ -377,7 +378,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model-name",
         type=str,
-        default="qwen-15b",
+        default="qwen-14b",
         help="Model name (must match CSV filename)",
     )
     parser.add_argument(
@@ -420,6 +421,12 @@ if __name__ == "__main__":
         default=True,
         help="Only include sentences before model convergence",
     )
+    parser.add_argument(
+        "--proximity-ignore",
+        type=int,
+        default=16,
+        help="Proximity ignore for vertical scores",
+    )
 
     args = parser.parse_args()
 
@@ -432,4 +439,5 @@ if __name__ == "__main__":
         random_ef=args.random_ef,
         output_dir=args.output_dir,
         pre_convergence_only=args.pre_convergence_only,
+        proximity_ignore=args.proximity_ignore
     )
