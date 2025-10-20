@@ -25,7 +25,7 @@ from matplotlib.lines import Line2D
 # Class to hold arguments for importance calculation functions
 class ImportanceArgs:
     """Class to hold arguments for importance calculation functions."""
-    def __init__(self, use_absolute=False, forced_answer_dir=None, similarity_threshold=0.8, use_similar_chunks=True, use_abs_importance=False, top_chunks=100, use_prob_true=True):
+    def __init__(self, use_absolute=False, forced_answer_dir=None, similarity_threshold=0.8, use_similar_chunks=True, use_abs_importance=False, top_chunks=100, use_prob_true=True, global_vocab=None, laplace_alpha=1e-9):
         self.use_absolute = use_absolute
         self.forced_answer_dir = forced_answer_dir
         self.similarity_threshold = similarity_threshold
@@ -33,6 +33,8 @@ class ImportanceArgs:
         self.use_abs_importance = use_abs_importance
         self.top_chunks = top_chunks
         self.use_prob_true = use_prob_true
+        self.global_vocab = global_vocab
+        self.laplace_alpha = laplace_alpha
 
 # Set tokenizers parallelism to false to avoid deadlocks with multiprocessing
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -66,6 +68,8 @@ parser.add_argument('-bs', '--batch_size', type=int, default=8192, help='Batch s
 parser.add_argument('-us', '--use_similar_chunks', default=True, action='store_true', help='Use similar chunks for importance calculation')
 parser.add_argument('-np', '--num_processes', type=int, default=min(100, mp.cpu_count()), help='Number of parallel processes for chunk processing')
 parser.add_argument('-pt', '--use_prob_true', default=False, action='store_false', help='Use probability of correct answer (P(true)) instead of answer distribution for KL divergence calculations')
+parser.add_argument('--laplace_alpha', type=float, default=1e-9, help='Smoothing parameter for KL divergence calculation. Use 1e-9 (default) for minimal smoothing to prevent division by zero, or 1.0 for true Laplace smoothing with add-one smoothing')
+parser.add_argument('--use_global_vocab', default=False, action='store_true', help='If True, use global vocabulary from entire dataset for consistent Laplace smoothing across all KL divergence calculations. If False (default), use local vocabulary (union of answers in each pair of chunks)')
 args = parser.parse_args()
 
 # Set consistent font size for all plots
@@ -291,13 +295,13 @@ def process_chunk_importance(chunk_idx, chunk_info, chunk_embedding_cache, chunk
     
     # Calculate resampling importance metrics
     rs_acc = calculate_resampling_importance_accuracy(chunk_idx, chunk_accuracies, args)
-    rs_kl = calculate_resampling_importance_kl(chunk_idx, chunk_info, problem_dir) if problem_dir else 0.0
+    rs_kl = calculate_resampling_importance_kl(chunk_idx, chunk_info, problem_dir, args) if problem_dir else 0.0
     metrics.update({"resampling_importance_accuracy": rs_acc, "resampling_importance_kl": rs_kl})
     
     # Calculate forced importance metrics if forced answers available
     if forced_answer_accuracies and hasattr(args, 'forced_answer_dir') and args.forced_answer_dir:
         forced_acc = calculate_forced_importance_accuracy(chunk_idx, forced_answer_accuracies, args)
-        forced_kl = calculate_forced_importance_kl(chunk_idx, forced_answer_accuracies, problem_dir, args.forced_answer_dir) if problem_dir else 0.0
+        forced_kl = calculate_forced_importance_kl(chunk_idx, forced_answer_accuracies, problem_dir, args.forced_answer_dir, args) if problem_dir else 0.0
         metrics.update({"forced_importance_accuracy": forced_acc, "forced_importance_kl": forced_kl})
     
     return chunk_idx, metrics
@@ -501,7 +505,7 @@ def calculate_counterfactual_importance_kl(chunk_idx, chunk_info, chunk_embeddin
             })
     
     # Calculate KL divergence between dissimilar and next distributions
-    kl_div = calculate_kl_divergence(dissimilar_sols, next_sols + similar_sols if args.use_similar_chunks else next_sols, use_prob_true=args.use_prob_true)
+    kl_div = calculate_kl_divergence(dissimilar_sols, next_sols + similar_sols if args.use_similar_chunks else next_sols, use_prob_true=args.use_prob_true, global_vocab=args.global_vocab, alpha=args.laplace_alpha)
     
     return kl_div
 
@@ -536,7 +540,7 @@ def calculate_resampling_importance_accuracy(chunk_idx, chunk_accuracies, args=N
         return abs(diff)
     return diff
 
-def calculate_resampling_importance_kl(chunk_idx, chunk_info, problem_dir):
+def calculate_resampling_importance_kl(chunk_idx, chunk_info, problem_dir, args=None):
     """
     Calculate resampling importance for a chunk based on KL divergence.
     
@@ -590,7 +594,7 @@ def calculate_resampling_importance_kl(chunk_idx, chunk_info, problem_dir):
         return 0.0
         
     # Calculate KL divergence
-    return calculate_kl_divergence(chunk_sols1, chunk_sols2, use_prob_true=args.use_prob_true)
+    return calculate_kl_divergence(chunk_sols1, chunk_sols2, use_prob_true=args.use_prob_true, global_vocab=args.global_vocab, alpha=args.laplace_alpha)
 
 def calculate_forced_importance_accuracy(chunk_idx, forced_answer_accuracies, args=None):
     """
@@ -625,7 +629,7 @@ def calculate_forced_importance_accuracy(chunk_idx, forced_answer_accuracies, ar
         return abs(diff)
     return diff
 
-def calculate_forced_importance_kl(chunk_idx, forced_answer_accuracies, problem_dir, forced_answer_dir):
+def calculate_forced_importance_kl(chunk_idx, forced_answer_accuracies, problem_dir, forced_answer_dir, args=None):
     """
     Calculate forced importance for a chunk based on KL divergence.
     
@@ -702,17 +706,63 @@ def calculate_forced_importance_kl(chunk_idx, forced_answer_accuracies, problem_
         return 0.0
     
     # Use the consistent KL divergence calculation
-    return calculate_kl_divergence(current_solutions, next_solutions, use_prob_true=args.use_prob_true)
+    return calculate_kl_divergence(current_solutions, next_solutions, use_prob_true=args.use_prob_true, global_vocab=args.global_vocab, alpha=args.laplace_alpha)
 
-def calculate_kl_divergence(chunk_sols1, chunk_sols2, laplace_smooth=False, use_prob_true=True):
+def compute_global_vocabulary(problem_dirs: List[Path], use_prob_true: bool = True) -> Optional[set]:
+    """
+    Compute the global vocabulary of all unique answers across all problems.
+    
+    Args:
+        problem_dirs: List of problem directories to scan
+        use_prob_true: If True, return None (not needed for P(true) distributions)
+                      If False, compute vocabulary from answer distributions
+    
+    Returns:
+        Set of all unique normalized answers, or None if use_prob_true is True
+    """
+    # For P(true) distributions, vocabulary is always {True, False}, so we don't need this
+    if use_prob_true:
+        return None
+    
+    print("Computing global vocabulary from all problems...")
+    global_vocab = set()
+    
+    for problem_dir in tqdm(problem_dirs, desc="Scanning problem vocabularies"):
+        # Find all chunk directories in this problem
+        chunk_dirs = sorted([d for d in problem_dir.iterdir() if d.is_dir() and d.name.startswith("chunk_")])
+        
+        for chunk_dir in chunk_dirs:
+            solutions_file = chunk_dir / "solutions.json"
+            if solutions_file.exists():
+                try:
+                    with open(solutions_file, 'r', encoding='utf-8') as f:
+                        solutions = json.load(f)
+                    
+                    # Extract all unique answers
+                    for sol in solutions:
+                        answer = normalize_answer(sol.get("answer", ""))
+                        if answer:
+                            global_vocab.add(answer)
+                except Exception as e:
+                    # Silently continue on errors
+                    pass
+    
+    print(f"Global vocabulary size: {len(global_vocab)} unique answers")
+    return global_vocab
+
+def calculate_kl_divergence(chunk_sols1, chunk_sols2, laplace_smooth=False, use_prob_true=False, global_vocab=None, alpha=1e-9):
     """Calculate KL divergence between answer distributions of two chunks.
     
     Args:
         chunk_sols1: First set of solutions
         chunk_sols2: Second set of solutions
-        laplace_smooth: Whether to use Laplace smoothing
+        laplace_smooth: Whether to use Laplace smoothing (deprecated, use alpha parameter instead)
         use_prob_true: If True, calculate KL divergence between P(true) distributions
                       If False, calculate KL divergence between answer distributions
+        global_vocab: Optional set of all possible answers. If provided, used for Laplace smoothing
+                     to ensure consistent vocabulary size V across all KL divergence calculations.
+                     If None, falls back to using union of answers in the two chunks.
+        alpha: Smoothing parameter. Use 1e-9 for minimal smoothing (epsilon), 1.0 for Laplace smoothing.
     """
     if use_prob_true:
         # Calculate P(true) for each set
@@ -725,8 +775,7 @@ def calculate_kl_divergence(chunk_sols1, chunk_sols2, laplace_smooth=False, use_
         if total1 == 0 or total2 == 0:
             return 0.0
             
-        # Calculate probabilities with Laplace smoothing if requested
-        alpha = 1 if laplace_smooth else 1e-9
+        # Calculate probabilities with smoothing using alpha parameter
         p = (correct1 + alpha) / (total1 + 2 * alpha)  # Add alpha to both numerator and denominator
         q = (correct2 + alpha) / (total2 + 2 * alpha)
         
@@ -755,9 +804,15 @@ def calculate_kl_divergence(chunk_sols1, chunk_sols2, laplace_smooth=False, use_
         if not answer_counts1 or not answer_counts2:
             return 0.0
         
-        # All possible answers across both sets
-        all_answers = set(answer_counts1.keys()) | set(answer_counts2.keys())
-        V = len(all_answers)
+        # Use global vocabulary if provided, otherwise fall back to union of answers
+        if global_vocab is not None:
+            # Use the global vocabulary for consistent V across all comparisons
+            all_answers = global_vocab
+            V = len(global_vocab)
+        else:
+            # Fall back to union of answers in the two chunks (original behavior)
+            all_answers = set(answer_counts1.keys()) | set(answer_counts2.keys())
+            V = len(all_answers)
         
         # Pre-calculate totals once
         total1 = sum(answer_counts1.values())
@@ -767,15 +822,16 @@ def calculate_kl_divergence(chunk_sols1, chunk_sols2, laplace_smooth=False, use_
         if total1 == 0 or total2 == 0:
             return 0.0
         
-        alpha = 1 if laplace_smooth else 1e-9
-        
-        # Laplace smoothing: add alpha to counts, and alpha*V to totals
+        # Use alpha parameter for smoothing: add alpha to counts, and alpha*V to totals
         smoothed_total1 = total1 + alpha * V
         smoothed_total2 = total2 + alpha * V
         
         # Calculate KL divergence in a single pass
+        # Only iterate over answers that appear in at least one of the two chunks to save time
+        # (answers not in either chunk contribute 0 to KL divergence)
+        observed_answers = set(answer_counts1.keys()) | set(answer_counts2.keys())
         kl_div = 0.0
-        for answer in all_answers:
+        for answer in observed_answers:
             count1 = answer_counts1[answer]
             count2 = answer_counts2[answer]
             
