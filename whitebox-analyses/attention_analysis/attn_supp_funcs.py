@@ -94,7 +94,7 @@ def get_suppression_KL_matrix(
             s_idxs, s_logits = decompress_logits_for_position(s_data, i)
 
             KL_sparse = calculate_kl_divergence_sparse(
-                (b_idxs, b_logits), (s_idxs, s_logits), temperature=0.6, epsilon=1e-9
+                (b_idxs, b_logits), (s_idxs, s_logits), temperature=0.6
             )
             # if norm_entropy:
 

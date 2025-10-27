@@ -61,12 +61,14 @@ original_qwen_forward_methods = {}
 
 class QwenAttentionHookManager(HookManager):
     """Specialized hook manager for Qwen attention masking."""
-    
-    def __init__(self, model, token_range, layer_2_heads_suppress=None):
+
+    def __init__(self, model, token_range, layer_2_heads_suppress=None, amplify=False, amplify_factor=2.0):
         super().__init__()
         self.model = model
         self.token_range = token_range
         self.layer_2_heads_suppress = layer_2_heads_suppress
+        self.amplify = amplify
+        self.amplify_factor = amplify_factor
         self.applied = False
     
     def apply(self):
@@ -129,13 +131,14 @@ class QwenAttentionHookManager(HookManager):
         for name, attn_module, layer_idx in target_modules:
             heads_mask = self.layer_2_heads_suppress[layer_idx] if self.layer_2_heads_suppress is not None else None
             new_forward = self._create_masked_forward(
-                attn_module.forward, layer_idx, rotary_emb_module, heads_mask=heads_mask
+                attn_module.forward, layer_idx, rotary_emb_module, heads_mask=heads_mask,
+                amplify=self.amplify, amplify_factor=self.amplify_factor
             )
             self.register_method_replacement(attn_module, 'forward', MethodType(new_forward, attn_module))
         
         self.applied = True
     
-    def _create_masked_forward(self, original_forward_func, current_layer_idx, rotary_module_ref, heads_mask=None):
+    def _create_masked_forward(self, original_forward_func, current_layer_idx, rotary_module_ref, heads_mask=None, amplify=False, amplify_factor=2.0):
         """Create a masked forward function for attention module."""
         token_range = self.token_range
         
@@ -210,13 +213,20 @@ class QwenAttentionHookManager(HookManager):
                 effective_end_pos = min(token_range_[1], kv_seq_len)
                 effective_start_pos = min(token_range_[0], effective_end_pos)
 
-                # Apply custom mask
+                # Apply custom mask or amplification
                 if effective_start_pos < effective_end_pos:
-                    mask_value = torch.finfo(attn_weights.dtype).min
-                    if heads_mask is None:
-                        attn_weights[..., effective_start_pos:effective_end_pos] = mask_value
+                    if amplify:
+                        amplify_bias = torch.log(torch.tensor(amplify_factor, dtype=attn_weights.dtype, device=attn_weights.device))
+                        if heads_mask is None:
+                            attn_weights[..., effective_start_pos:effective_end_pos] += amplify_bias
+                        else:
+                            attn_weights[:, heads_mask, :, effective_start_pos:effective_end_pos] += amplify_bias
                     else:
-                        attn_weights[:, heads_mask, :, effective_start_pos:effective_end_pos] = mask_value
+                        mask_value = torch.finfo(attn_weights.dtype).min
+                        if heads_mask is None:
+                            attn_weights[..., effective_start_pos:effective_end_pos] = mask_value
+                        else:
+                            attn_weights[:, heads_mask, :, effective_start_pos:effective_end_pos] = mask_value
 
             if attention_mask is not None:
                 attention_mask = attention_mask.to(device)
@@ -267,15 +277,17 @@ class QwenAttentionHookManager(HookManager):
         return masked_forward
 
 
-def apply_qwen_attn_mask_hooks(model, token_range, layer_2_heads_suppress=None):
+def apply_qwen_attn_mask_hooks(model, token_range, layer_2_heads_suppress=None, amplify=False, amplify_factor=2.0):
     """
-    Applies hooks to Qwen2-style attention modules to mask attention computation.
+    Applies hooks to Qwen2-style attention modules to mask or amplify attention computation.
     Backward compatibility wrapper using QwenAttentionHookManager.
-    
+
     Args:
         model: The model to apply hooks to
-        token_range: Token range(s) to mask - can be a single range or list of ranges
+        token_range: Token range(s) to mask/amplify - can be a single range or list of ranges
         layer_2_heads_suppress: Dict mapping layer indices to lists of head indices to suppress
+        amplify: If True, amplify attention instead of suppressing (default: False)
+        amplify_factor: Factor to amplify attention by (default: 2.0)
     """
     global original_qwen_forward_methods
     original_qwen_forward_methods = {}
@@ -405,13 +417,20 @@ def apply_qwen_attn_mask_hooks(model, token_range, layer_2_heads_suppress=None):
                 effective_end_pos = min(token_range_[1], kv_seq_len)
                 effective_start_pos = min(token_range_[0], effective_end_pos)
 
-                # Apply custom mask
+                # Apply custom mask or amplification
                 if effective_start_pos < effective_end_pos:
-                    mask_value = torch.finfo(attn_weights.dtype).min
-                    if heads_mask is None:
-                        attn_weights[..., effective_start_pos:effective_end_pos] = mask_value
+                    if amplify:
+                        amplify_bias = torch.log(torch.tensor(amplify_factor, dtype=attn_weights.dtype, device=attn_weights.device))
+                        if heads_mask is None:
+                            attn_weights[..., effective_start_pos:effective_end_pos] += amplify_bias
+                        else:
+                            attn_weights[:, heads_mask, :, effective_start_pos:effective_end_pos] += amplify_bias
                     else:
-                        attn_weights[:, heads_mask, :, effective_start_pos:effective_end_pos] = mask_value
+                        mask_value = torch.finfo(attn_weights.dtype).min
+                        if heads_mask is None:
+                            attn_weights[..., effective_start_pos:effective_end_pos] = mask_value
+                        else:
+                            attn_weights[:, heads_mask, :, effective_start_pos:effective_end_pos] = mask_value
 
             if attention_mask is not None:
                 attention_mask = attention_mask.to(device)

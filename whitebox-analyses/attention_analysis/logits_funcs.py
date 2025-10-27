@@ -3,6 +3,7 @@ from typing import List, Tuple, Optional, Dict, Set, Union
 import torch
 import torch.nn.functional as F
 import numpy as np
+from tqdm import tqdm
 
 from pkld import pkld
 from pytorch_models import analyze_text
@@ -196,6 +197,8 @@ def analyze_text_get_p_logits(
     float32=False,
     max_k=100,
     device_map="auto",
+    amplify=False,
+    amplify_factor=2.0,
 ):
     """Extract logits from model using the new pytorch_models structure."""
     
@@ -211,6 +214,8 @@ def analyze_text_get_p_logits(
         token_range_to_mask=token_range_to_mask,
         layers_to_mask=layers_to_mask,
         device_map=device_map,
+        amplify=amplify,
+        amplify_factor=amplify_factor,
     )
     logits = result["logits"]
 

@@ -29,7 +29,12 @@ def get_all_problem_numbers(model_name="qwen-14b", include_incorrect=True):
     Returns:
         List of (problem_num, is_correct) tuples
     """
-    dir_root = get_model_rollouts_root(model_name)
+    # Get repo root directory (two levels up from this file)
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    # Convert relative path from get_model_rollouts_root to absolute path
+    relative_root = get_model_rollouts_root(model_name)
+    dir_root = os.path.join(repo_root, relative_root)
     problem_list = []
 
     # Process correct solutions

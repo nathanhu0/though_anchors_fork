@@ -22,10 +22,12 @@ def extract_attention_and_logits(
     attn_layers: Optional[List[int]] = None,
     token_range_to_mask: Optional[List[int]] = None,
     mask_layers: Optional[Dict[int, List[int]]] = None,
+    amplify: bool = False,
+    amplify_factor: float = 2.0,
 ) -> Dict[str, Any]:
     """
     Run a forward pass to extract attention weights and logits.
-    
+
     Args:
         model: The language model
         tokenizer: The tokenizer
@@ -36,7 +38,9 @@ def extract_attention_and_logits(
         attn_layers: Optional list of specific layers to collect attention weights from
         token_range_to_mask: Optional token range to mask attention
         mask_layers: Optional layer indices to apply attention mask
-        
+        amplify: If True, amplify attention instead of suppressing
+        amplify_factor: Factor to amplify attention by
+
     Returns:
         Dictionary containing attention weights, logits, and metadata
     """
@@ -75,7 +79,7 @@ def extract_attention_and_logits(
                     warnings.filterwarnings("ignore", message=".*does not support `output_attentions=True`.*")
                     
                 if token_range_to_mask and mask_layers:
-                    apply_qwen_attn_mask_hooks(model, token_range_to_mask, layer_2_heads_suppress=mask_layers)
+                    apply_qwen_attn_mask_hooks(model, token_range_to_mask, layer_2_heads_suppress=mask_layers, amplify=amplify, amplify_factor=amplify_factor)
                     hooks_applied = True
 
                 outputs = model(
@@ -165,10 +169,12 @@ def analyze_text(
     token_range_to_mask: Optional[List[int]] = None,
     layers_to_mask: Optional[Dict[int, List[int]]] = None,
     device_map: str = "auto",
+    amplify: bool = False,
+    amplify_factor: float = 2.0,
 ) -> Dict[str, Any]:
     """
     Analyze a text using a model's forward pass.
-    
+
     Args:
         text: Input text to analyze
         model_name: Name of the model to use
@@ -180,7 +186,9 @@ def analyze_text(
         token_range_to_mask: Token range to mask
         layers_to_mask: Layers and heads to mask
         device_map: Device mapping strategy
-        
+        amplify: If True, amplify attention instead of suppressing
+        amplify_factor: Factor to amplify attention by
+
     Returns:
         Dictionary containing analysis results
     """
@@ -212,6 +220,8 @@ def analyze_text(
         attn_layers=attn_layers,
         token_range_to_mask=token_range_to_mask,
         mask_layers=layers_to_mask,
+        amplify=amplify,
+        amplify_factor=amplify_factor,
     )
 
     print_gpu_memory_summary("After forward pass")
@@ -224,7 +234,7 @@ def analyze_text(
         layer = next(layer for layer in attn_layers if layer in result["attention_weights"])
         attention_data = result["attention_weights"][layer]
         num_nans = np.isnan(attention_data).sum()
-        p_nan = num_nans / attention_data.size
+        p_nan = num_nans / attention_data.numel()
         assert ~np.isnan(attention_data).any(), f"Attention has NaNs{attention_data.shape=} ({p_nan=:.1%})"
 
     print(f"\t*** Analysis complete! ({float32=}) ***")
