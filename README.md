@@ -1,8 +1,20 @@
-# Thought Anchors ⚓
+# Thought Anchors Fork - Interactive Visualization
 
-We introduce a framework for interpreting the reasoning of large language models by attributing importance to individual sentences in their chain-of-thought. Using black-box, attention-based, and causal methods, we identify key reasoning steps, which we call **thought anchors**, that disproportionately influence downstream reasoning. These anchors are typically planning or backtracking sentences. Our work offers new tools and insights for understanding multi-step reasoning in language models.
+**Work-in-progress research fork of [Thought Anchors](https://github.com/thought-anchors/thought-anchors), adding interactive visualization tools.**
 
-See more:
+## Interactive Visualization
+
+**[View the visualization here](https://nathanhu0.github.io/though_anchors_fork/)**
+
+Visualize how sentences in LLM reasoning traces depend on and influence each other using counterfactual importance analysis.
+
+---
+
+## Original Thought Anchors
+
+Thought Anchors is a framework for interpreting the reasoning of large language models by attributing importance to individual sentences in their chain-of-thought. Using black-box, attention-based, and causal methods, the authors identify key reasoning steps, which they call **thought anchors**, that disproportionately influence downstream reasoning.
+
+See the original work:
 * 📄 Paper: https://arxiv.org/abs/2506.19143
 * 🎮 Interface: https://www.thought-anchors.com/
 * 💻 Repository for the interface: https://github.com/interp-reasoning/thought-anchors.com
