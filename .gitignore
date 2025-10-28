@@ -8,6 +8,8 @@
 *.lock
 plots/*
 math-rollouts/
+slurm
+/slurm/
 math-rollouts_test/
 .cursorindexingignore
 .specstory

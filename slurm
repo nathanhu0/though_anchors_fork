@@ -1,1 +1,0 @@
-/nlp/scr/nathu/slurm/
