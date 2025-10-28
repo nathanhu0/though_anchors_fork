@@ -67,6 +67,10 @@ def aggregate_to_boundaries(
 
 def create_sentence_to_sentence_matrix(result: Dict[str, Any], metric: str = 'kl_matrix_t1') -> np.ndarray:
     """Create sentence→sentence interaction matrix using pre-computed results."""
+    # Check if this metric is already computed at sentence level in sentence_interactions
+    if 'sentence_interactions' in result and f'sentence_{metric}' in result['sentence_interactions']:
+        return result['sentence_interactions'][f'sentence_{metric}']
+    
     response_data = result['response_intervention']
     sentence_boundaries = result['metadata']['sentence_boundaries']
 
@@ -78,6 +82,10 @@ def create_sentence_to_sentence_matrix(result: Dict[str, Any], metric: str = 'kl
 
 def create_prompt_to_sentence_matrix(result: Dict[str, Any], metric: str = 'kl_matrix_t1') -> np.ndarray:
     """Create prompt→sentence interaction matrix using pre-computed results."""
+    # Check if this metric is already computed at sentence level in sentence_interactions
+    if 'sentence_interactions' in result and f'prompt_{metric}' in result['sentence_interactions']:
+        return result['sentence_interactions'][f'prompt_{metric}']
+    
     prompt_data = result['prompt_intervention']
     sentence_boundaries = result['metadata']['sentence_boundaries']
 
@@ -151,9 +159,13 @@ def get_available_metrics(result: Dict[str, Any]) -> List[str]:
 
     # Check response intervention data
     response_data = result.get('response_intervention', {})
-    for metric in ['kl_matrix_t1', 'kl_matrix_t06', 'tv_matrix_t1', 'tv_matrix_t06', 'normalized_kl']:
+    for metric in ['kl_matrix_t1', 'kl_matrix_t06', 'tv_matrix_t1', 'tv_matrix_t06']:
         if metric in response_data:
             metrics.append(metric)
+    
+    # Check if normalized_kl is available in sentence_interactions
+    if 'sentence_interactions' in result and 'sentence_normalized_kl' in result['sentence_interactions']:
+        metrics.append('normalized_kl')
 
     return metrics
 
@@ -279,64 +291,9 @@ def load_intervention(
             np.log(np.maximum(prompt_prob_after_t06, eps))
         )
 
-    # Add normalized KL metric based on kl_matrix_t1
-    if 'kl_matrix_t1' in result['response_intervention']:
-        EPS = 1e-8  # Small epsilon to avoid zero divisions
-        
-        # Get COPIES of the raw KL matrices at token level (don't modify originals!)
-        response_kl = result['response_intervention']['kl_matrix_t1'].copy()
-        prompt_kl = result['prompt_intervention']['kl_matrix_t1'].copy() if 'prompt_intervention' in result else None
-        
-        # Get boundaries
-        sentence_boundaries = result['metadata']['sentence_boundaries']
-        prompt_boundaries = result['metadata'].get('prompt_boundaries', [])
-        
-        n_tokens = response_kl.shape[1]
-        n_response_sentences = len(sentence_boundaries)
-        n_prompt_components = len(prompt_boundaries) if prompt_boundaries else 0
-        
-        # Create normalized versions at token level
-        normalized_response_kl = np.zeros_like(response_kl)
-        normalized_prompt_kl = np.zeros_like(prompt_kl) if prompt_kl is not None else None
-        
-        # For each target token, normalize all influences
-        for target_token in range(n_tokens):
-            influences = []
-            source_info = []
-            
-            # Collect influences from prompt components
-            if prompt_kl is not None:
-                for prompt_idx in range(prompt_kl.shape[0]):
-                    value = prompt_kl[prompt_idx, target_token] + EPS
-                    influences.append(value)
-                    source_info.append(('prompt', prompt_idx))
-            
-            # Collect influences from response sentences (only earlier tokens)
-            for source_idx in range(min(target_token, response_kl.shape[0])):
-                value = response_kl[source_idx, target_token] + EPS
-                influences.append(value)
-                source_info.append(('response', source_idx))
-            
-            # Normalize if we have influences
-            if influences:
-                total = sum(influences)
-                normalized_values = [inf / total for inf in influences]
-                
-                # Assign normalized values back
-                for (src_type, src_idx), norm_val in zip(source_info, normalized_values):
-                    if src_type == 'prompt' and normalized_prompt_kl is not None:
-                        normalized_prompt_kl[src_idx, target_token] = norm_val
-                    elif src_type == 'response':
-                        normalized_response_kl[src_idx, target_token] = norm_val
-        
-        # Add to result
-        result['response_intervention']['normalized_kl'] = normalized_response_kl
-        if 'prompt_intervention' in result and normalized_prompt_kl is not None:
-            result['prompt_intervention']['normalized_kl'] = normalized_prompt_kl
-
     # Add sentence-to-sentence interaction matrices for all metrics
     sentence_interactions = {}
-    metrics_to_process = ['kl_matrix_t1', 'kl_matrix_t06', 'tv_matrix_t1', 'tv_matrix_t06', 'nll_changes_t1', 'nll_changes_t06', 'normalized_kl']
+    metrics_to_process = ['kl_matrix_t1', 'kl_matrix_t06', 'tv_matrix_t1', 'tv_matrix_t06', 'nll_changes_t1', 'nll_changes_t06']
     for metric in metrics_to_process:
         if metric in result['response_intervention']:
             sentence_interactions[f'sentence_{metric}'] = create_sentence_to_sentence_matrix(result, metric)
@@ -346,6 +303,56 @@ def load_intervention(
         for metric in metrics_to_process:
             if metric in result['prompt_intervention']:
                 sentence_interactions[f'prompt_{metric}'] = create_prompt_to_sentence_matrix(result, metric)
+    
+    # Now normalize the sentence-level KL matrices we just created
+    if 'sentence_kl_matrix_t1' in sentence_interactions:
+        EPS = 1e-8  # Small epsilon to avoid zero divisions
+        
+        # Get the sentence-level matrices we just computed
+        sentence_kl_matrix = sentence_interactions['sentence_kl_matrix_t1']
+        prompt_sentence_matrix = sentence_interactions.get('prompt_kl_matrix_t1', None)
+        
+        n_sentences = sentence_kl_matrix.shape[0]
+        n_prompt_components = prompt_sentence_matrix.shape[0] if prompt_sentence_matrix is not None else 0
+        
+        # Create normalized versions
+        normalized_sentence_matrix = np.zeros_like(sentence_kl_matrix)
+        normalized_prompt_matrix = np.zeros_like(prompt_sentence_matrix) if prompt_sentence_matrix is not None else None
+        
+        # For each target sentence, normalize all influences to sum to 1
+        for target_sent in range(n_sentences):
+            influences = []
+            source_info = []
+            
+            # Collect influences from prompt components
+            if prompt_sentence_matrix is not None:
+                for prompt_idx in range(n_prompt_components):
+                    value = max(EPS, prompt_sentence_matrix[prompt_idx, target_sent])
+                    influences.append(value)
+                    source_info.append(('prompt', prompt_idx))
+            
+            # Collect influences from earlier response sentences
+            for source_sent in range(target_sent):
+                value = max(EPS, sentence_kl_matrix[source_sent, target_sent])
+                influences.append(value)
+                source_info.append(('response', source_sent))
+            
+            # Normalize if we have influences
+            if influences:
+                total = sum(influences)
+                normalized_values = [inf / total for inf in influences]
+                
+                # Assign normalized values back
+                for (src_type, src_idx), norm_val in zip(source_info, normalized_values):
+                    if src_type == 'prompt' and normalized_prompt_matrix is not None:
+                        normalized_prompt_matrix[src_idx, target_sent] = norm_val
+                    elif src_type == 'response':
+                        normalized_sentence_matrix[src_idx, target_sent] = norm_val
+        
+        # Add normalized matrices to sentence_interactions
+        sentence_interactions['sentence_normalized_kl'] = normalized_sentence_matrix
+        if normalized_prompt_matrix is not None:
+            sentence_interactions['prompt_normalized_kl'] = normalized_prompt_matrix
 
     result['sentence_interactions'] = sentence_interactions
 

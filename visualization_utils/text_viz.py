@@ -330,39 +330,6 @@ def create_html_visualization(sentences: List[str],
         let currentDependencyScores = [];
         let currentEffectScores = [];
 
-        function calculateDependencyScores(interactionMatrix, minDist) {{
-            const nSentences = interactionMatrix[0].length; // Target sentences
-            const scores = new Array(nSentences).fill(0);
-
-            for (let targetSent = 0; targetSent < nSentences; targetSent++) {{
-                let maxDependency = 0;
-                for (let suppressedSent = 0; suppressedSent < targetSent; suppressedSent++) {{
-                    if (targetSent - suppressedSent >= minDist) {{
-                        const effect = interactionMatrix[suppressedSent][targetSent];
-                        maxDependency = Math.max(maxDependency, effect);
-                    }}
-                }}
-                scores[targetSent] = maxDependency;
-            }}
-            return scores;
-        }}
-
-        function calculateEffectScores(interactionMatrix, minDist) {{
-            const nSentences = interactionMatrix.length; // Source sentences
-            const scores = new Array(nSentences).fill(0);
-
-            for (let sourceSent = 0; sourceSent < nSentences; sourceSent++) {{
-                let maxEffect = 0;
-                // Ensure we never consider self-interaction (minimum distance is 1)
-                const actualMinDist = Math.max(1, minDist);
-                for (let targetSent = sourceSent + actualMinDist; targetSent < interactionMatrix[0].length; targetSent++) {{
-                    const effect = interactionMatrix[sourceSent][targetSent];
-                    maxEffect = Math.max(maxEffect, effect);
-                }}
-                scores[sourceSent] = maxEffect;
-            }}
-            return scores;
-        }}
 
         function colorFromScore(score, isBlue = false) {{
             // Clip negative values to white (no dependency)
@@ -482,14 +449,8 @@ def create_html_visualization(sentences: List[str],
             updateColors(currentHover);
         }}
 
-        function recalculateScores() {{
-            // Calculate scores with current distance using sentence matrix
-            currentDependencyScores = calculateDependencyScores(sentenceMatrix, minDistance);
-            currentEffectScores = calculateEffectScores(sentenceMatrix, minDistance);
-        }}
-
         function initializeVisualization() {{
-            // First, calculate the initial scores
+            // First, calculate the initial scores using the batch version
             recalculateScores();
 
             const container = document.getElementById('textContainer');
@@ -794,6 +755,25 @@ def visualize_batch_results(
             border-color: #007bff;
             background: #007bff;
         }}
+        
+        .agg-btn {{
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            cursor: pointer;
+            padding: 4px 8px;
+            transition: all 0.2s;
+        }}
+        
+        .agg-btn:hover {{
+            background: #f0f0f0;
+        }}
+        
+        .agg-btn.active {{
+            background: #4CAF50;
+            color: white;
+            border-color: #4CAF50;
+        }}
 
         .distance-control {{
             display: flex;
@@ -898,6 +878,12 @@ def visualize_batch_results(
             </label>
             <span id="scalingInfo" style="font-size: 12px; color: #666; margin-left: 10px;"></span>
         </div>
+        
+        <div style="margin-top: 10px;">
+            <label style="font-size: 14px;">Aggregation:</label>
+            <button id="aggMax" class="agg-btn active" onclick="setAggregation('max')" style="padding: 4px 8px; margin: 0 5px;">MAX</button>
+            <button id="aggSum" class="agg-btn" onclick="setAggregation('sum')" style="padding: 4px 8px;">SUM</button>
+        </div>
     </div>
 
     <div class="problem-info" id="problemInfo">
@@ -935,6 +921,7 @@ def visualize_batch_results(
         let currentEffectScores = [];
         let useAdaptiveScaling = false;
         let adaptiveMax = globalMax;
+        let aggregationMode = 'max'; // 'max' or 'sum'
 
         function initializeProblemGrid() {{
             const grid = document.getElementById('problemGrid');
@@ -979,16 +966,33 @@ def visualize_batch_results(
             const scores = new Array(nSentences).fill(0);
 
             for (let targetSent = 0; targetSent < nSentences; targetSent++) {{
-                let maxDependency = 0;
-                for (let suppressedSent = 0; suppressedSent < targetSent; suppressedSent++) {{
-                    // Distance is the gap between sentences (how many sentences between them)
-                    const gap = targetSent - suppressedSent - 1;
-                    if (gap >= minDist) {{
-                        const effect = interactionMatrix[suppressedSent][targetSent];
-                        maxDependency = Math.max(maxDependency, effect);
+                let aggregatedValue = 0;
+                if (aggregationMode === 'sum') {{
+                    // Sum all dependencies meeting distance criteria
+                    for (let suppressedSent = 0; suppressedSent < targetSent; suppressedSent++) {{
+                        const gap = targetSent - suppressedSent - 1;
+                        if (gap >= minDist) {{
+                            const effect = interactionMatrix[suppressedSent][targetSent];
+                            // Filter out NaN and invalid values
+                            if (!isNaN(effect) && isFinite(effect)) {{
+                                aggregatedValue += effect;
+                            }}
+                        }}
+                    }}
+                }} else {{
+                    // Max dependency (default)
+                    for (let suppressedSent = 0; suppressedSent < targetSent; suppressedSent++) {{
+                        const gap = targetSent - suppressedSent - 1;
+                        if (gap >= minDist) {{
+                            const effect = interactionMatrix[suppressedSent][targetSent];
+                            // Filter out NaN and invalid values
+                            if (!isNaN(effect) && isFinite(effect)) {{
+                                aggregatedValue = Math.max(aggregatedValue, effect);
+                            }}
+                        }}
                     }}
                 }}
-                scores[targetSent] = maxDependency;
+                scores[targetSent] = aggregatedValue;
             }}
             return scores;
         }}
@@ -998,13 +1002,27 @@ def visualize_batch_results(
             const scores = new Array(nSentences).fill(0);
 
             for (let sourceSent = 0; sourceSent < nSentences; sourceSent++) {{
-                let maxEffect = 0;
+                let aggregatedValue = 0;
                 // Start at sourceSent + minDist + 1 to ensure gap of at least minDist
-                for (let targetSent = sourceSent + minDist + 1; targetSent < interactionMatrix[0].length; targetSent++) {{
-                    const effect = interactionMatrix[sourceSent][targetSent];
-                    maxEffect = Math.max(maxEffect, effect);
+                if (aggregationMode === 'sum') {{
+                    for (let targetSent = sourceSent + minDist + 1; targetSent < interactionMatrix[0].length; targetSent++) {{
+                        const effect = interactionMatrix[sourceSent][targetSent];
+                        // Filter out NaN and invalid values
+                        if (!isNaN(effect) && isFinite(effect)) {{
+                            aggregatedValue += effect;
+                        }}
+                    }}
+                }} else {{
+                    // Max effect (default)
+                    for (let targetSent = sourceSent + minDist + 1; targetSent < interactionMatrix[0].length; targetSent++) {{
+                        const effect = interactionMatrix[sourceSent][targetSent];
+                        // Filter out NaN and invalid values
+                        if (!isNaN(effect) && isFinite(effect)) {{
+                            aggregatedValue = Math.max(aggregatedValue, effect);
+                        }}
+                    }}
                 }}
-                scores[sourceSent] = maxEffect;
+                scores[sourceSent] = aggregatedValue;
             }}
             return scores;
         }}
@@ -1088,11 +1106,19 @@ def visualize_batch_results(
         }}
 
         function colorFromScore(score, isBlue = false) {{
-            if (score <= 0) {{
+            // Handle NaN, undefined, or invalid values
+            if (!isFinite(score) || score <= 0) {{
                 return 'rgb(255, 255, 255)';
             }}
 
             const maxToUse = useAdaptiveScaling ? adaptiveMax : globalMax;
+            
+            // Safety check for maxToUse
+            if (!isFinite(maxToUse) || maxToUse <= 0) {{
+                console.warn('Invalid maxToUse:', maxToUse);
+                return 'rgb(255, 255, 255)';
+            }}
+            
             const normalizedScore = Math.min(score / maxToUse, 1);
 
             if (isBlue) {{
@@ -1109,6 +1135,24 @@ def visualize_batch_results(
         function toggleAdaptiveScaling(checked) {{
             useAdaptiveScaling = checked;
             computeAdaptiveMax();
+            updateColors(currentHover);
+        }}
+        
+        function setAggregation(mode) {{
+            aggregationMode = mode;
+            
+            // Update button states
+            document.getElementById('aggMax').classList.toggle('active', mode === 'max');
+            document.getElementById('aggSum').classList.toggle('active', mode === 'sum');
+            
+            // Recalculate scores with new aggregation
+            recalculateScores();
+            
+            // Update adaptive max if needed
+            if (useAdaptiveScaling) {{
+                computeAdaptiveMax();
+            }}
+            
             updateColors(currentHover);
         }}
 
@@ -1199,28 +1243,45 @@ def visualize_batch_results(
             }});
 
             if (hoverIndex === -1 && !isPromptHover) {{
+                const aggText = aggregationMode === 'sum' ? 'Total' : 'Max';
                 if (currentMode === 1) {{
                     const gapText = minDistance === 0 ? "adjacent sentences" : 
                                    minDistance === 1 ? "sentences with ≥1 gap" : 
                                    `sentences with ≥${{minDistance}} gap`;
-                    modeIndicator.textContent = `Mode 1: Max dependency on ${{gapText}}`;
+                    modeIndicator.textContent = `Mode 1: ${{aggText}} dependency on ${{gapText}}`;
                 }} else {{
                     const gapText = minDistance === 0 ? "adjacent sentences" : 
                                    minDistance === 1 ? "sentences with ≥1 gap" : 
                                    `sentences with ≥${{minDistance}} gap`;
-                    modeIndicator.textContent = `Mode 2: Max effect on ${{gapText}}`;
+                    modeIndicator.textContent = `Mode 2: ${{aggText}} effect on ${{gapText}}`;
                 }}
             }} else if (isPromptHover) {{
                 if (currentMode === 1) {{
                     modeIndicator.textContent = `Hover: Prompt component ${{promptHoverIdx + 1}} (dependencies not shown in this mode)`;
                 }} else {{
-                    modeIndicator.textContent = `Hover: How prompt component ${{promptHoverIdx + 1}} affects response sentences`;
+                    // Calculate total effect of this prompt component
+                    let totalEffect = 0;
+                    if (hasPromptMatrix && promptMatrix) {{
+                        for (let i = 0; i < sentenceMatrix[0].length; i++) {{
+                            const effect = promptMatrix[promptHoverIdx][i];
+                            if (!isNaN(effect) && isFinite(effect) && effect > 0) {{
+                                totalEffect += effect;
+                            }}
+                        }}
+                    }}
+                    modeIndicator.textContent = `Hover: How prompt component ${{promptHoverIdx + 1}} affects response sentences (total: ${{totalEffect.toExponential(2)}})`;
                 }}
             }} else {{
                 if (currentMode === 1) {{
-                    modeIndicator.textContent = `Hover: How much sentence ${{hoverIndex + 1}} depends on earlier sentences and prompt`;
+                    const score = currentDependencyScores[hoverIndex];
+                    const scoreText = isNaN(score) ? 'NaN' : score.toExponential(2);
+                    const aggText = aggregationMode === 'sum' ? 'Total' : 'Max';
+                    modeIndicator.textContent = `Hover: How much sentence ${{hoverIndex + 1}} depends on earlier sentences (${{aggText}}: ${{scoreText}})`;
                 }} else {{
-                    modeIndicator.textContent = `Hover: How sentence ${{hoverIndex + 1}} affects later sentences`;
+                    const score = currentEffectScores[hoverIndex];
+                    const scoreText = isNaN(score) ? 'NaN' : score.toExponential(2);
+                    const aggText = aggregationMode === 'sum' ? 'Total' : 'Max';
+                    modeIndicator.textContent = `Hover: How sentence ${{hoverIndex + 1}} affects later sentences (${{aggText}}: ${{scoreText}})`;
                 }}
             }}
         }}
