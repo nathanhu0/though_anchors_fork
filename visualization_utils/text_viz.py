@@ -598,7 +598,13 @@ def visualize_batch_results(
             sentence_matrices[curr_metric] = create_sentence_to_sentence_matrix(result, curr_metric).tolist()
 
             # Create prompt-to-sentence matrix if available
-            if 'prompt_intervention' in result and curr_metric in result['prompt_intervention']:
+            if curr_metric == 'normalized_kl':
+                # Special case: normalized_kl is in sentence_interactions
+                if 'sentence_interactions' in result and 'prompt_normalized_kl' in result['sentence_interactions']:
+                    prompt_matrices[curr_metric] = result['sentence_interactions']['prompt_normalized_kl'].tolist()
+                else:
+                    prompt_matrices[curr_metric] = None
+            elif 'prompt_intervention' in result and curr_metric in result['prompt_intervention']:
                 prompt_matrices[curr_metric] = create_prompt_to_sentence_matrix(result, curr_metric).tolist()
             else:
                 prompt_matrices[curr_metric] = None
