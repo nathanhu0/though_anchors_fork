@@ -552,7 +552,7 @@ def visualize_result(result: Dict[str, Any],
 def visualize_batch_results(
     batch_results: Dict[tuple, Dict[str, Any]],
     output_path: str = "batch_sentence_viz.html",
-    metric: str = 'kl_matrix_t1',
+    metric: str = 'normalized_kl',
     min_distance: int = 3
 ) -> str:
     """
@@ -650,16 +650,6 @@ def visualize_batch_results(
     available_problems_json = json.dumps(available_problems)
     available_metrics_json = json.dumps(available_metrics)
 
-    # Get first problem text from metadata
-    if available_problems:
-        first_key = available_problems[0]['key']
-        first_data = problems_data[first_key]
-        problem_text = extract_problem_text_from_prompt(
-            first_data.get('prompt_texts', []),
-            first_data.get('full_prompt', '')
-        )
-    else:
-        problem_text = "No problems available"
 
     html = f"""
 <!DOCTYPE html>
@@ -838,8 +828,19 @@ def visualize_batch_results(
 </head>
 <body>
     <div class="header">
-        <h1>Batch Sentence Dependencies</h1>
-        <p>Interactive visualization with problem and metric selection</p>
+        <h1>LLM Reasoning Analysis: Sentence Dependencies</h1>
+        <p>Interactive visualization showing how sentences in LLM reasoning depend on each other</p>
+        <div style="margin-top: 15px; padding: 15px; background: #f0f8ff; border-radius: 8px; text-align: left; max-width: 800px; margin-left: auto; margin-right: auto;">
+            <strong>Quick Guide:</strong>
+            <ul style="margin: 10px 0; padding-left: 20px;">
+                <li><strong>Normalized KL (default):</strong> Shows percentage contribution - each sentence's dependencies sum to 100%</li>
+                <li><strong>Hover over sentences:</strong> See detailed interactions between specific sentences</li>
+                <li><strong>Red mode:</strong> How much each sentence depends on earlier context</li>
+                <li><strong>Blue mode:</strong> How much each sentence affects future reasoning</li>
+                <li><strong>Min Gap slider:</strong> Filter to show only long-range dependencies (0 = include adjacent sentences)</li>
+                <li><strong>MAX vs SUM:</strong> Show strongest single dependency vs cumulative dependencies</li>
+            </ul>
+        </div>
     </div>
 
     <div class="problem-selector">
@@ -873,7 +874,7 @@ def visualize_batch_results(
         
         <div style="margin-top: 10px;">
             <label style="font-size: 14px;">
-                <input type="checkbox" id="adaptiveScaling" onchange="toggleAdaptiveScaling(this.checked)">
+                <input type="checkbox" id="adaptiveScaling" onchange="toggleAdaptiveScaling(this.checked)" checked>
                 Adaptive color scaling
             </label>
             <span id="scalingInfo" style="font-size: 12px; color: #666; margin-left: 10px;"></span>
@@ -886,10 +887,6 @@ def visualize_batch_results(
         </div>
     </div>
 
-    <div class="problem-info" id="problemInfo">
-        <h3>Problem Question:</h3>
-        <div id="problemText">{problem_text}</div>
-    </div>
 
     <div id="modeIndicator" style="text-align: center; margin-bottom: 10px; font-weight: bold; color: #666;">
         Mode 1: Max dependency on sentences with ≥{min_distance} gap
@@ -919,7 +916,7 @@ def visualize_batch_results(
         let minDistance = {min_distance};
         let currentDependencyScores = [];
         let currentEffectScores = [];
-        let useAdaptiveScaling = false;
+        let useAdaptiveScaling = true; // Default to adaptive scaling for better visibility
         let adaptiveMax = globalMax;
         let aggregationMode = 'max'; // 'max' or 'sum'
 
@@ -945,12 +942,6 @@ def visualize_batch_results(
                 btn.classList.remove('active');
             }});
             event.target.classList.add('active');
-
-            // Update problem info
-            const problemData = problemsData[problemKey];
-            const problemText = extractProblemText(problemData.prompt_texts, problemData.full_prompt);
-            const problemInfoDiv = document.getElementById('problemInfo');
-            problemInfoDiv.innerHTML = `<h3>Problem ${{problemData.problem_num}} (${{problemData.is_correct ? 'Correct' : 'Incorrect'}} Solution):</h3><div id="problemText">${{problemText}}</div>`;
 
             // Recalculate and update visualization
             recalculateScores();
@@ -1102,7 +1093,7 @@ def visualize_batch_results(
                 document.getElementById('percentileLabel').textContent = '(adaptive)';
             }}
             
-            document.getElementById('maxValue').textContent = adaptiveMax.toExponential(3);
+            document.getElementById('maxValue').textContent = adaptiveMax.toFixed(4);
         }}
 
         function colorFromScore(score, isBlue = false) {{
@@ -1269,17 +1260,17 @@ def visualize_batch_results(
                             }}
                         }}
                     }}
-                    modeIndicator.textContent = `Hover: How prompt component ${{promptHoverIdx + 1}} affects response sentences (total: ${{totalEffect.toExponential(2)}})`;
+                    modeIndicator.textContent = `Hover: How prompt component ${{promptHoverIdx + 1}} affects response sentences (total: ${{totalEffect.toFixed(4)}})`;
                 }}
             }} else {{
                 if (currentMode === 1) {{
                     const score = currentDependencyScores[hoverIndex];
-                    const scoreText = isNaN(score) ? 'NaN' : score.toExponential(2);
+                    const scoreText = isNaN(score) ? 'NaN' : score.toFixed(4);
                     const aggText = aggregationMode === 'sum' ? 'Total' : 'Max';
                     modeIndicator.textContent = `Hover: How much sentence ${{hoverIndex + 1}} depends on earlier sentences (${{aggText}}: ${{scoreText}})`;
                 }} else {{
                     const score = currentEffectScores[hoverIndex];
-                    const scoreText = isNaN(score) ? 'NaN' : score.toExponential(2);
+                    const scoreText = isNaN(score) ? 'NaN' : score.toFixed(4);
                     const aggText = aggregationMode === 'sum' ? 'Total' : 'Max';
                     modeIndicator.textContent = `Hover: How sentence ${{hoverIndex + 1}} affects later sentences (${{aggText}}: ${{scoreText}})`;
                 }}
@@ -1394,26 +1385,6 @@ def visualize_batch_results(
             container.appendChild(responseDiv);
         }}
 
-        function extractProblemText(promptTexts, fullPrompt) {{
-            // Extract problem text from metadata
-            if (promptTexts && promptTexts.length > 1) {{
-                // Skip first (prompt prefix) and last (cot prefix) elements
-                const problemParts = promptTexts.length > 2 
-                    ? promptTexts.slice(1, -1) 
-                    : promptTexts.slice(1);
-                return problemParts.join(" ");
-            }} else if (fullPrompt) {{
-                // Try to extract from full prompt
-                if (fullPrompt.includes("Problem:")) {{
-                    const start = fullPrompt.indexOf("Problem:") + "Problem:".length;
-                    const end = fullPrompt.indexOf("\\n\\n", start);
-                    return fullPrompt.substring(start, end !== -1 ? end : fullPrompt.length).trim();
-                }} else if (fullPrompt.includes("Let's think")) {{
-                    return fullPrompt.substring(0, fullPrompt.indexOf("Let's think")).trim();
-                }}
-            }}
-            return "Problem text not available in metadata";
-        }}
 
         function initializeMetricSelector() {{
             const select = document.getElementById('metricSelect');
@@ -1444,7 +1415,7 @@ def visualize_batch_results(
             if (useAdaptiveScaling) {{
                 computeAdaptiveMax();
             }} else {{
-                document.getElementById('maxValue').textContent = globalMax.toExponential(3);
+                document.getElementById('maxValue').textContent = globalMax.toFixed(4);
             }}
             updateColors(currentHover);
         }}
@@ -1487,10 +1458,10 @@ def visualize_batch_results(
                 // Show statistics in console for debugging
                 console.log(`Metric: ${{currentMetric}}`);
                 console.log(`Total values: ${{allValues.length}}`);
-                console.log(`Min: ${{allValues[0].toExponential(2)}}`);
-                console.log(`Median: ${{allValues[Math.floor(allValues.length/2)].toExponential(2)}}`);
-                console.log(`95th percentile: ${{globalMax.toExponential(2)}}`);
-                console.log(`Max: ${{allValues[allValues.length-1].toExponential(2)}}`);
+                console.log(`Min: ${{allValues[0].toFixed(4)}}`);
+                console.log(`Median: ${{allValues[Math.floor(allValues.length/2)].toFixed(4)}}`);
+                console.log(`99th percentile: ${{globalMax.toFixed(4)}}`);
+                console.log(`Max: ${{allValues[allValues.length-1].toFixed(4)}}`);
             }} else {{
                 globalMax = 1;
             }}
@@ -1545,10 +1516,15 @@ if __name__ == "__main__":
 
     # Create visualization
     output_path = visualize_batch_results(results)
+    
+    # Also create index.html for GitHub Pages (same content, different name)
+    import shutil
+    shutil.copy(output_path, "index.html")
 
     import os
     abs_path = os.path.abspath(output_path)
     print(f"\nVisualization created: {abs_path}")
+    print(f"  Also copied to index.html for GitHub Pages")
     print(f"\nTo view, open in browser or run:")
     print(f"python -m http.server 8000")
     print(f"Then visit: http://localhost:8000/{output_path}")
