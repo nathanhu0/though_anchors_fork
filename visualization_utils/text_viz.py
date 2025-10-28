@@ -1,8 +1,13 @@
 import numpy as np
 import json
 import os
+import sys
 from typing import List, Dict, Any, Tuple, Optional
-from .aggregation_utils import (
+
+# Add parent directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from visualization_utils.aggregation_utils import (
     create_sentence_to_sentence_matrix,
     create_prompt_to_sentence_matrix,
     calculate_dependency_scores,
@@ -13,26 +18,24 @@ from .aggregation_utils import (
 )
 
 
-def load_problem_text(problem_num: int) -> str:
-    """Load the problem text from selected_problems.json."""
-    try:
-        # Look for selected_problems.json in parent directory
-        problems_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'selected_problems.json')
-        if not os.path.exists(problems_path):
-            # Try current directory
-            problems_path = 'selected_problems.json'
-
-        with open(problems_path, 'r') as f:
-            problems = json.load(f)
-
-        # Find the problem by ID
-        for problem in problems:
-            if problem.get('problem_idx') == f'problem_{problem_num}':
-                return problem.get('problem', 'Problem text not found')
-
-        return f'Problem {problem_num} not found in selected_problems.json'
-    except Exception as e:
-        return f'Error loading problem text: {e}'
+def extract_problem_text_from_prompt(prompt_texts: List[str], full_prompt: str = "") -> str:
+    """Extract problem text from prompt components or full prompt."""
+    if prompt_texts and len(prompt_texts) > 1:
+        # Usually the problem text is in the problem_sentences (after prompt_prefix)
+        # Skip the first element (prompt prefix) and last element (cot prefix)
+        problem_parts = prompt_texts[1:-1] if len(prompt_texts) > 2 else prompt_texts[1:]
+        return " ".join(problem_parts)
+    elif full_prompt:
+        # Try to extract from full prompt if available
+        # Look for text between common markers
+        if "Problem:" in full_prompt:
+            start = full_prompt.find("Problem:") + len("Problem:")
+            end = full_prompt.find("\n\n", start) if "\n\n" in full_prompt[start:] else len(full_prompt)
+            return full_prompt[start:end].strip()
+        # Otherwise return first part before "Let's think"
+        elif "Let's think" in full_prompt:
+            return full_prompt[:full_prompt.find("Let's think")].strip()
+    return "Problem text not available in metadata"
 
 def normalize_scores(scores: np.ndarray, clip_percentile: float = 95) -> np.ndarray:
     """Normalize scores to 0-1 range with optional clipping of outliers."""
@@ -112,8 +115,11 @@ def create_html_visualization(sentences: List[str],
     # Problem info section
     problem_section = ""
     if problem_info:
-        # Load the actual problem text
-        problem_text = load_problem_text(problem_info.get('problem_num', 0))
+        # Extract problem text from metadata
+        prompt_texts = problem_info.get('prompt_texts', [])
+        full_prompt = problem_info.get('full_prompt', '')
+        problem_text = extract_problem_text_from_prompt(prompt_texts, full_prompt)
+        
         problem_section = f"""
         <div class="problem-info">
             <h2>Problem {problem_info.get('problem_num', 'N/A')} ({'Correct' if problem_info.get('is_correct', False) else 'Incorrect'} Solution)</h2>
@@ -439,10 +445,9 @@ def create_html_visualization(sentences: List[str],
                 }}
             }} else {{
                 if (currentMode === 1) {{
-                    const promptText = hasPromptMatrix ? " + prompt components" : "";
-                    modeIndicator.textContent = `Hover: Max effect from ALL sources${{promptText}} on sentence ${{hoverIndex + 1}}`;
+                    modeIndicator.textContent = `Hover: How much sentence ${{hoverIndex + 1}} depends on earlier sentences`;
                 }} else {{
-                    modeIndicator.textContent = `Hover: How sentence ${{hoverIndex + 1}} affects ALL other sentences`;
+                    modeIndicator.textContent = `Hover: How sentence ${{hoverIndex + 1}} affects later sentences`;
                 }}
             }}
         }}
@@ -558,13 +563,17 @@ def visualize_result(result: Dict[str, Any],
     problem_num = result['metadata']['problem_num']
     is_correct = result['metadata']['is_correct']
     model_name = result['metadata']['model_name']
+    prompt_texts = result['metadata'].get('prompt_texts', [])
+    full_prompt = result['metadata'].get('full_prompt', '')
     title = f"Sentence Dependencies - {metric}"
 
     problem_info = {
         'problem_num': problem_num,
         'is_correct': is_correct,
         'model_name': model_name,
-        'metric': metric
+        'metric': metric,
+        'prompt_texts': prompt_texts,
+        'full_prompt': full_prompt
     }
 
     # Generate HTML with both matrices
@@ -672,15 +681,24 @@ def visualize_batch_results(
     valid_values = all_values[~np.isnan(all_values) & ~np.isinf(all_values)]
     positive_values = valid_values[valid_values > 0]
     global_min = 0
-    global_max = np.max(positive_values) if len(positive_values) > 0 else 1
+    # Use 99th percentile to clip outliers
+    global_max = np.percentile(positive_values, 99) if len(positive_values) > 0 else 1
 
     # Convert to JSON for JavaScript
     problems_json = json.dumps(problems_data)
     available_problems_json = json.dumps(available_problems)
     available_metrics_json = json.dumps(available_metrics)
 
-    # Problem text info
-    problem_text = load_problem_text(available_problems[0]['problem_num']) if available_problems else ""
+    # Get first problem text from metadata
+    if available_problems:
+        first_key = available_problems[0]['key']
+        first_data = problems_data[first_key]
+        problem_text = extract_problem_text_from_prompt(
+            first_data.get('prompt_texts', []),
+            first_data.get('full_prompt', '')
+        )
+    else:
+        problem_text = "No problems available"
 
     html = f"""
 <!DOCTYPE html>
@@ -786,6 +804,7 @@ def visualize_batch_results(
         .colorbar {{
             display: flex;
             align-items: center;
+            justify-content: center;
             gap: 10px;
         }}
 
@@ -821,9 +840,8 @@ def visualize_batch_results(
         }}
 
         .sentence.hovered {{
-            border-color: #000;
-            box-shadow: 0 0 10px rgba(0,0,0,0.3);
-            transform: scale(1.05);
+            outline: 3px solid #333;
+            outline-offset: 1px;
         }}
 
         .problem-info {{
@@ -841,7 +859,7 @@ def visualize_batch_results(
 <body>
     <div class="header">
         <h1>Batch Sentence Dependencies</h1>
-        <p>Metric: <strong>{metric}</strong> | Interactive visualization with problem selection</p>
+        <p>Interactive visualization with problem and metric selection</p>
     </div>
 
     <div class="problem-selector">
@@ -851,6 +869,12 @@ def visualize_batch_results(
     </div>
 
     <div class="controls">
+        <div class="metric-selector">
+            <label for="metricSelect">Metric:</label>
+            <select id="metricSelect" onchange="selectMetric(this.value)" style="padding: 6px; font-size: 14px;">
+            </select>
+        </div>
+
         <div class="mode-buttons">
             <button class="mode-btn active" onclick="setMode(1)">
                 Mode 1: Dependencies (RED)
@@ -861,25 +885,35 @@ def visualize_batch_results(
         </div>
 
         <div class="distance-control">
-            <label for="distanceSlider">Min Distance:</label>
+            <label for="distanceSlider">Min Gap (sentences between):</label>
             <input type="range" id="distanceSlider" min="0" max="20" value="{min_distance}"
                    oninput="updateDistance(this.value)">
             <span id="distanceValue">{min_distance}</span>
         </div>
-
-        <div class="colorbar">
-            <span>0</span>
-            <div class="colorbar-gradient"></div>
-            <span id="maxValue">{global_max:.3e}</span>
+        
+        <div style="margin-top: 10px;">
+            <label style="font-size: 14px;">
+                <input type="checkbox" id="adaptiveScaling" onchange="toggleAdaptiveScaling(this.checked)">
+                Adaptive color scaling
+            </label>
+            <span id="scalingInfo" style="font-size: 12px; color: #666; margin-left: 10px;"></span>
         </div>
     </div>
 
     <div class="problem-info" id="problemInfo">
+        <h3>Problem Question:</h3>
         <div id="problemText">{problem_text}</div>
     </div>
 
-    <div id="modeIndicator" style="text-align: center; margin-bottom: 20px; font-weight: bold; color: #666;">
-        Mode 1: Max dependency on sentences ≥{min_distance} positions earlier
+    <div id="modeIndicator" style="text-align: center; margin-bottom: 10px; font-weight: bold; color: #666;">
+        Mode 1: Max dependency on sentences with ≥{min_distance} gap
+    </div>
+
+    <div class="colorbar" style="margin: 10px auto; width: 300px;">
+        <span>0</span>
+        <div class="colorbar-gradient" style="display: inline-block; width: 200px; height: 20px;"></div>
+        <span id="maxValue">{global_max:.3e}</span>
+        <span id="percentileLabel" style="font-size: 11px; color: #666;">(99th percentile)</span>
     </div>
 
     <div class="text-container" id="textContainer">
@@ -888,15 +922,19 @@ def visualize_batch_results(
     <script>
         const problemsData = {problems_json};
         const availableProblems = {available_problems_json};
+        const availableMetrics = {available_metrics_json};
         const globalMin = {global_min};
-        const globalMax = {global_max};
+        let globalMax = {global_max};  // Made mutable for metric changes
 
         let currentProblemKey = availableProblems[0].key;
+        let currentMetric = '{metric}';
         let currentMode = 1;
         let currentHover = -1;
         let minDistance = {min_distance};
         let currentDependencyScores = [];
         let currentEffectScores = [];
+        let useAdaptiveScaling = false;
+        let adaptiveMax = globalMax;
 
         function initializeProblemGrid() {{
             const grid = document.getElementById('problemGrid');
@@ -923,12 +961,16 @@ def visualize_batch_results(
 
             // Update problem info
             const problemData = problemsData[problemKey];
-            const problemText = loadProblemText(problemData.problem_num);
-            document.getElementById('problemText').textContent = problemText || `Problem ${{problemData.problem_num}} (${{problemData.is_correct ? 'Correct' : 'Incorrect'}})`;
+            const problemText = extractProblemText(problemData.prompt_texts, problemData.full_prompt);
+            const problemInfoDiv = document.getElementById('problemInfo');
+            problemInfoDiv.innerHTML = `<h3>Problem ${{problemData.problem_num}} (${{problemData.is_correct ? 'Correct' : 'Incorrect'}} Solution):</h3><div id="problemText">${{problemText}}</div>`;
 
             // Recalculate and update visualization
             recalculateScores();
             renderSentences();
+            if (useAdaptiveScaling) {{
+                computeAdaptiveMax();
+            }}
             updateColors();
         }}
 
@@ -939,7 +981,9 @@ def visualize_batch_results(
             for (let targetSent = 0; targetSent < nSentences; targetSent++) {{
                 let maxDependency = 0;
                 for (let suppressedSent = 0; suppressedSent < targetSent; suppressedSent++) {{
-                    if (targetSent - suppressedSent >= minDist) {{
+                    // Distance is the gap between sentences (how many sentences between them)
+                    const gap = targetSent - suppressedSent - 1;
+                    if (gap >= minDist) {{
                         const effect = interactionMatrix[suppressedSent][targetSent];
                         maxDependency = Math.max(maxDependency, effect);
                     }}
@@ -955,8 +999,8 @@ def visualize_batch_results(
 
             for (let sourceSent = 0; sourceSent < nSentences; sourceSent++) {{
                 let maxEffect = 0;
-                const actualMinDist = Math.max(1, minDist);
-                for (let targetSent = sourceSent + actualMinDist; targetSent < interactionMatrix[0].length; targetSent++) {{
+                // Start at sourceSent + minDist + 1 to ensure gap of at least minDist
+                for (let targetSent = sourceSent + minDist + 1; targetSent < interactionMatrix[0].length; targetSent++) {{
                     const effect = interactionMatrix[sourceSent][targetSent];
                     maxEffect = Math.max(maxEffect, effect);
                 }}
@@ -965,79 +1009,230 @@ def visualize_batch_results(
             return scores;
         }}
 
+        function computeAdaptiveMax() {{
+            if (!useAdaptiveScaling) {{
+                adaptiveMax = globalMax;
+                document.getElementById('scalingInfo').textContent = '';
+                document.getElementById('percentileLabel').textContent = '(99th percentile)';
+                return;
+            }}
+            
+            const problemData = problemsData[currentProblemKey];
+            const sentenceMatrix = problemData.sentence_matrices[currentMetric];
+            const promptMatrix = problemData.prompt_matrices[currentMetric];
+            let relevantValues = [];
+            
+            if (currentHover >= 0) {{
+                // Hovering on a response sentence - collect the displayed max values for each sentence
+                if (currentMode === 1) {{
+                    // Dependencies mode - each sentence shows its max dependency
+                    problemData.sentences.forEach((_, i) => {{
+                        if (i < currentHover) {{
+                            // This sentence shows how much the hovered sentence depends on it
+                            relevantValues.push(sentenceMatrix[i][currentHover]);
+                        }} else if (i === currentHover) {{
+                            // The hovered sentence shows its total dependency score
+                            relevantValues.push(currentDependencyScores[i]);
+                        }}
+                        // Later sentences show 0, don't include
+                    }});
+                    // Also include prompt dependencies shown
+                    if (promptMatrix) {{
+                        for (let i = 0; i < promptMatrix.length; i++) {{
+                            relevantValues.push(promptMatrix[i][currentHover]);
+                        }}
+                    }}
+                }} else {{
+                    // Effects mode - each sentence shows the effect of hovered sentence
+                    problemData.sentences.forEach((_, i) => {{
+                        relevantValues.push(sentenceMatrix[currentHover][i]);
+                    }});
+                }}
+            }} else if (currentHover < -1) {{
+                // Hovering on a prompt component - collect its effects on all response sentences
+                const promptIdx = -(currentHover + 100);
+                if (promptMatrix && currentMode === 2) {{
+                    for (let i = 0; i < sentenceMatrix[0].length; i++) {{
+                        relevantValues.push(promptMatrix[promptIdx][i]);
+                    }}
+                }}
+            }} else {{
+                // No hover - collect the max scores that are displayed for each sentence
+                if (currentMode === 1) {{
+                    // Each sentence shows its dependency score
+                    relevantValues = [...currentDependencyScores];
+                }} else {{
+                    // Each sentence shows its effect score
+                    relevantValues = [...currentEffectScores];
+                }}
+            }}
+            
+            // Filter out zeros and NaNs
+            relevantValues = relevantValues.filter(v => v > 0 && !isNaN(v));
+            
+            if (relevantValues.length > 0) {{
+                // Use 99th percentile of relevant values
+                relevantValues.sort((a, b) => a - b);
+                const idx = Math.ceil(0.99 * relevantValues.length) - 1;
+                adaptiveMax = relevantValues[Math.min(idx, relevantValues.length - 1)];
+                
+                document.getElementById('scalingInfo').textContent = `(Normalizing on ${{relevantValues.length}} displayed values)`;
+                document.getElementById('percentileLabel').textContent = '(adaptive)';
+            }} else {{
+                adaptiveMax = 1;
+                document.getElementById('scalingInfo').textContent = '(No values in current view)';
+                document.getElementById('percentileLabel').textContent = '(adaptive)';
+            }}
+            
+            document.getElementById('maxValue').textContent = adaptiveMax.toExponential(3);
+        }}
+
         function colorFromScore(score, isBlue = false) {{
             if (score <= 0) {{
                 return 'rgb(255, 255, 255)';
             }}
 
-            const normalizedScore = Math.min(score / globalMax, 1);
+            const maxToUse = useAdaptiveScaling ? adaptiveMax : globalMax;
+            const normalizedScore = Math.min(score / maxToUse, 1);
 
             if (isBlue) {{
-                const blueGreen = Math.round(255 * (1 - normalizedScore));
+                // Blue mode - lighter max intensity (80 instead of 0)
+                const blueGreen = Math.round(255 - (175 * normalizedScore));  // Range: 255 to 80
                 return `rgb(${{blueGreen}}, ${{blueGreen}}, 255)`;
             }} else {{
-                const redGreen = Math.round(255 * (1 - normalizedScore));
+                // Red mode - lighter max intensity (80 instead of 0)  
+                const redGreen = Math.round(255 - (175 * normalizedScore));  // Range: 255 to 80
                 return `rgb(255, ${{redGreen}}, ${{redGreen}})`;
             }}
         }}
 
+        function toggleAdaptiveScaling(checked) {{
+            useAdaptiveScaling = checked;
+            computeAdaptiveMax();
+            updateColors(currentHover);
+        }}
+
         function updateColors(hoverIndex = -1) {{
             const problemData = problemsData[currentProblemKey];
-            const sentenceMatrix = problemData.sentence_matrix;
-            const promptMatrix = problemData.prompt_matrix;
+            // Use the current metric from sentence_matrices
+            const sentenceMatrix = problemData.sentence_matrices[currentMetric];
+            const promptMatrix = problemData.prompt_matrices[currentMetric];
             const hasPromptMatrix = problemData.has_prompt_matrix;
             const modeIndicator = document.getElementById('modeIndicator');
+            
+            // Recompute adaptive max if needed
+            if (useAdaptiveScaling) {{
+                computeAdaptiveMax();
+            }}
+            
+            // Check if hovering over prompt component (negative index)
+            const isPromptHover = hoverIndex < -1;
+            const promptHoverIdx = isPromptHover ? -(hoverIndex + 100) : -1;
 
+            // Update prompt component colors
+            if (problemData.prompt_texts) {{
+                problemData.prompt_texts.forEach((_, i) => {{
+                    const promptSpan = document.getElementById(`prompt-${{i}}`);
+                    if (promptSpan) {{
+                        if (isPromptHover && i === promptHoverIdx) {{
+                            // Hovering over this prompt component - highlight it
+                            promptSpan.style.backgroundColor = '#ffe6e6';
+                        }} else if (!isPromptHover && hoverIndex >= 0 && hasPromptMatrix && promptMatrix) {{
+                            // Hovering over a response sentence - show how much it depends on this prompt
+                            const promptEffect = promptMatrix[i][hoverIndex];
+                            if (currentMode === 1) {{
+                                promptSpan.style.backgroundColor = colorFromScore(promptEffect, false);
+                            }} else {{
+                                promptSpan.style.backgroundColor = 'white';
+                            }}
+                        }} else {{
+                            // Default state
+                            promptSpan.style.backgroundColor = 'white';
+                        }}
+                    }}
+                }});
+            }}
+
+            // Update response sentence colors
             problemData.sentences.forEach((sentence, i) => {{
                 const span = document.getElementById(`sentence-${{i}}`);
 
                 span.classList.toggle('hovered', i === hoverIndex);
 
-                if (hoverIndex === -1) {{
+                if (hoverIndex === -1 && !isPromptHover) {{
+                    // No hover - show default scores
                     if (currentMode === 1) {{
                         span.style.backgroundColor = colorFromScore(currentDependencyScores[i], false);
                     }} else {{
                         span.style.backgroundColor = colorFromScore(currentEffectScores[i], true);
                     }}
-                }} else {{
-                    if (currentMode === 1) {{
-                        let maxEffect = 0;
-
-                        if (hasPromptMatrix && promptMatrix) {{
-                            for (let promptIdx = 0; promptIdx < promptMatrix.length; promptIdx++) {{
-                                const promptEffect = promptMatrix[promptIdx][hoverIndex];
-                                maxEffect = Math.max(maxEffect, promptEffect);
-                            }}
-                        }}
-
-                        for (let sentIdx = 0; sentIdx < sentenceMatrix.length; sentIdx++) {{
-                            if (sentIdx !== hoverIndex) {{
-                                const sentEffect = sentenceMatrix[sentIdx][hoverIndex];
-                                maxEffect = Math.max(maxEffect, sentEffect);
-                            }}
-                        }}
-
-                        span.style.backgroundColor = colorFromScore(maxEffect, false);
+                }} else if (isPromptHover) {{
+                    // Hovering over a prompt component - show its effect on response sentences
+                    if (hasPromptMatrix && promptMatrix && currentMode === 2) {{
+                        const promptEffect = promptMatrix[promptHoverIdx][i];
+                        span.style.backgroundColor = colorFromScore(promptEffect, true);
                     }} else {{
+                        span.style.backgroundColor = 'white';
+                    }}
+                }} else {{
+                    // Hovering over a response sentence
+                    if (i === hoverIndex) {{
+                        // The hovered sentence itself - keep it white (no self-interaction)
+                        span.style.backgroundColor = 'white';
+                    }} else if (currentMode === 1) {{
+                        // Mode 1: Show what the HOVERED sentence depends on
+                        let dependencyScore = 0;
+                        
+                        if (i < hoverIndex) {{
+                            // Show how much the hovered sentence depends on this earlier sentence
+                            dependencyScore = sentenceMatrix[i][hoverIndex];
+                        }}
+                        // Later sentences: dependencyScore stays 0
+
+                        span.style.backgroundColor = colorFromScore(dependencyScore, false);
+                    }} else {{
+                        // Mode 2: Show effect of hovered sentence on others
                         const interactionScore = sentenceMatrix[hoverIndex][i];
                         span.style.backgroundColor = colorFromScore(interactionScore, true);
                     }}
                 }}
             }});
 
-            if (hoverIndex === -1) {{
+            if (hoverIndex === -1 && !isPromptHover) {{
                 if (currentMode === 1) {{
-                    modeIndicator.textContent = `Mode 1: Max dependency on sentences ≥${{minDistance}} positions earlier`;
+                    const gapText = minDistance === 0 ? "adjacent sentences" : 
+                                   minDistance === 1 ? "sentences with ≥1 gap" : 
+                                   `sentences with ≥${{minDistance}} gap`;
+                    modeIndicator.textContent = `Mode 1: Max dependency on ${{gapText}}`;
                 }} else {{
-                    modeIndicator.textContent = `Mode 2: Max effect on sentences ≥${{minDistance}} positions later`;
+                    const gapText = minDistance === 0 ? "adjacent sentences" : 
+                                   minDistance === 1 ? "sentences with ≥1 gap" : 
+                                   `sentences with ≥${{minDistance}} gap`;
+                    modeIndicator.textContent = `Mode 2: Max effect on ${{gapText}}`;
+                }}
+            }} else if (isPromptHover) {{
+                if (currentMode === 1) {{
+                    modeIndicator.textContent = `Hover: Prompt component ${{promptHoverIdx + 1}} (dependencies not shown in this mode)`;
+                }} else {{
+                    modeIndicator.textContent = `Hover: How prompt component ${{promptHoverIdx + 1}} affects response sentences`;
                 }}
             }} else {{
                 if (currentMode === 1) {{
-                    const promptText = hasPromptMatrix ? " + prompt components" : "";
-                    modeIndicator.textContent = `Hover: Max effect from ALL sources${{promptText}} on sentence ${{hoverIndex + 1}}`;
+                    modeIndicator.textContent = `Hover: How much sentence ${{hoverIndex + 1}} depends on earlier sentences and prompt`;
                 }} else {{
-                    modeIndicator.textContent = `Hover: How sentence ${{hoverIndex + 1}} affects ALL other sentences`;
+                    modeIndicator.textContent = `Hover: How sentence ${{hoverIndex + 1}} affects later sentences`;
                 }}
+            }}
+        }}
+
+        function updateColorbar() {{
+            const colorbarGradient = document.querySelector('.colorbar-gradient');
+            if (currentMode === 1) {{
+                // Red gradient for dependency mode
+                colorbarGradient.style.background = 'linear-gradient(to right, white, rgb(255, 80, 80))';
+            }} else {{
+                // Blue gradient for effect mode
+                colorbarGradient.style.background = 'linear-gradient(to right, white, rgb(80, 80, 255))';
             }}
         }}
 
@@ -1054,6 +1249,7 @@ def visualize_batch_results(
                 document.querySelector('.mode-btn.mode2').classList.add('active');
             }}
 
+            updateColorbar();
             updateColors(currentHover);
         }}
 
@@ -1061,12 +1257,15 @@ def visualize_batch_results(
             minDistance = parseInt(value);
             document.getElementById('distanceValue').textContent = minDistance;
             recalculateScores();
+            if (useAdaptiveScaling) {{
+                computeAdaptiveMax();
+            }}
             updateColors(currentHover);
         }}
 
         function recalculateScores() {{
             const problemData = problemsData[currentProblemKey];
-            const sentenceMatrix = problemData.sentence_matrix;
+            const sentenceMatrix = problemData.sentence_matrices[currentMetric];
             currentDependencyScores = calculateDependencyScores(sentenceMatrix, minDistance);
             currentEffectScores = calculateEffectScores(sentenceMatrix, minDistance);
         }}
@@ -1075,6 +1274,45 @@ def visualize_batch_results(
             const problemData = problemsData[currentProblemKey];
             const container = document.getElementById('textContainer');
             container.innerHTML = '';
+            
+            // Add prompt components first if they exist
+            if (problemData.prompt_texts && problemData.prompt_texts.length > 0) {{
+                const promptDiv = document.createElement('div');
+                promptDiv.style.cssText = 'border: 2px solid #2196F3; padding: 10px; margin-bottom: 15px; background-color: white; border-radius: 5px;';
+                
+                const promptLabel = document.createElement('div');
+                promptLabel.textContent = 'PROMPT:';
+                promptLabel.style.cssText = 'font-weight: bold; color: #2196F3; margin-bottom: 10px;';
+                promptDiv.appendChild(promptLabel);
+                
+                problemData.prompt_texts.forEach((promptText, i) => {{
+                    const span = document.createElement('span');
+                    span.id = `prompt-${{i}}`;
+                    span.className = 'sentence prompt-sentence';
+                    span.textContent = promptText + ' ';
+                    span.style.cssText = 'background-color: white; padding: 2px 4px; margin: 2px; border-radius: 3px; display: inline-block;';
+                    span.onmouseenter = () => {{
+                        currentHover = -100 - i;  // Use negative values for prompt hover
+                        updateColors(currentHover);
+                    }};
+                    span.onmouseleave = () => {{
+                        currentHover = -1;
+                        updateColors();
+                    }};
+                    promptDiv.appendChild(span);
+                }});
+                
+                container.appendChild(promptDiv);
+            }}
+            
+            // Add response sentences
+            const responseDiv = document.createElement('div');
+            responseDiv.style.cssText = 'border: 2px solid #4CAF50; padding: 10px; background-color: white; border-radius: 5px;';
+            
+            const responseLabel = document.createElement('div');
+            responseLabel.textContent = 'RESPONSE:';
+            responseLabel.style.cssText = 'font-weight: bold; color: #4CAF50; margin-bottom: 10px;';
+            responseDiv.appendChild(responseLabel);
 
             problemData.sentences.forEach((sentence, i) => {{
                 const span = document.createElement('span');
@@ -1089,18 +1327,118 @@ def visualize_batch_results(
                     currentHover = -1;
                     updateColors();
                 }};
-                container.appendChild(span);
+                responseDiv.appendChild(span);
+            }});
+            
+            container.appendChild(responseDiv);
+        }}
+
+        function extractProblemText(promptTexts, fullPrompt) {{
+            // Extract problem text from metadata
+            if (promptTexts && promptTexts.length > 1) {{
+                // Skip first (prompt prefix) and last (cot prefix) elements
+                const problemParts = promptTexts.length > 2 
+                    ? promptTexts.slice(1, -1) 
+                    : promptTexts.slice(1);
+                return problemParts.join(" ");
+            }} else if (fullPrompt) {{
+                // Try to extract from full prompt
+                if (fullPrompt.includes("Problem:")) {{
+                    const start = fullPrompt.indexOf("Problem:") + "Problem:".length;
+                    const end = fullPrompt.indexOf("\\n\\n", start);
+                    return fullPrompt.substring(start, end !== -1 ? end : fullPrompt.length).trim();
+                }} else if (fullPrompt.includes("Let's think")) {{
+                    return fullPrompt.substring(0, fullPrompt.indexOf("Let's think")).trim();
+                }}
+            }}
+            return "Problem text not available in metadata";
+        }}
+
+        function initializeMetricSelector() {{
+            const select = document.getElementById('metricSelect');
+            availableMetrics.forEach(metric => {{
+                const option = document.createElement('option');
+                option.value = metric;
+                // Special handling for normalized_kl
+                if (metric === 'normalized_kl') {{
+                    option.textContent = 'NORMALIZED KL (% contribution)';
+                }} else {{
+                    option.textContent = metric.toUpperCase().replace(/_/g, ' ');
+                }}
+                if (metric === currentMetric) {{
+                    option.selected = true;
+                }}
+                select.appendChild(option);
             }});
         }}
 
-        function loadProblemText(problemNum) {{
-            // This would normally load from selected_problems.json
-            // For now, return a placeholder
-            return `Problem ${{problemNum}} - Math reasoning problem`;
+        function selectMetric(metric) {{
+            currentMetric = metric;
+            
+            // Recalculate the global max for the new metric
+            updateGlobalMaxForMetric();
+            
+            // Update the display
+            recalculateScores();
+            if (useAdaptiveScaling) {{
+                computeAdaptiveMax();
+            }} else {{
+                document.getElementById('maxValue').textContent = globalMax.toExponential(3);
+            }}
+            updateColors(currentHover);
+        }}
+        
+        function updateGlobalMaxForMetric(percentile = 99) {{
+            // Collect all values for current metric
+            let allValues = [];
+            for (const key in problemsData) {{
+                const data = problemsData[key];
+                const sentenceMatrix = data.sentence_matrices[currentMetric];
+                const promptMatrix = data.prompt_matrices[currentMetric];
+                
+                // Collect from sentence matrix
+                for (let i = 0; i < sentenceMatrix.length; i++) {{
+                    for (let j = 0; j < sentenceMatrix[i].length; j++) {{
+                        if (sentenceMatrix[i][j] > 0 && !isNaN(sentenceMatrix[i][j])) {{
+                            allValues.push(sentenceMatrix[i][j]);
+                        }}
+                    }}
+                }}
+                
+                // Collect from prompt matrix if exists
+                if (promptMatrix) {{
+                    for (let i = 0; i < promptMatrix.length; i++) {{
+                        for (let j = 0; j < promptMatrix[i].length; j++) {{
+                            if (promptMatrix[i][j] > 0 && !isNaN(promptMatrix[i][j])) {{
+                                allValues.push(promptMatrix[i][j]);
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+            
+            // Calculate percentile to clip outliers
+            if (allValues.length > 0) {{
+                allValues.sort((a, b) => a - b);
+                const index = Math.ceil((percentile / 100) * allValues.length) - 1;
+                globalMax = allValues[Math.min(index, allValues.length - 1)];
+                
+                // Show statistics in console for debugging
+                console.log(`Metric: ${{currentMetric}}`);
+                console.log(`Total values: ${{allValues.length}}`);
+                console.log(`Min: ${{allValues[0].toExponential(2)}}`);
+                console.log(`Median: ${{allValues[Math.floor(allValues.length/2)].toExponential(2)}}`);
+                console.log(`95th percentile: ${{globalMax.toExponential(2)}}`);
+                console.log(`Max: ${{allValues[allValues.length-1].toExponential(2)}}`);
+            }} else {{
+                globalMax = 1;
+            }}
         }}
 
         function initializeVisualization() {{
             initializeProblemGrid();
+            initializeMetricSelector();
+            updateColorbar();
             recalculateScores();
             renderSentences();
             updateColors();
@@ -1120,7 +1458,12 @@ def visualize_batch_results(
     return output_path
 
 if __name__ == "__main__":
-    from .aggregation_utils import load_all_cached_interventions
+    import sys
+    import os
+    # Add parent directory for imports
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'whitebox-analyses', 'nathan_scripts'))
+    from visualization_utils.aggregation_utils import load_all_cached_interventions
 
     # Default: load suppression results
     print("Loading llama-8b suppression results...")

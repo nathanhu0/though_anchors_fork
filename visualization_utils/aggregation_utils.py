@@ -151,7 +151,7 @@ def get_available_metrics(result: Dict[str, Any]) -> List[str]:
 
     # Check response intervention data
     response_data = result.get('response_intervention', {})
-    for metric in ['kl_matrix_t1', 'kl_matrix_t06', 'tv_matrix_t1', 'tv_matrix_t06']:
+    for metric in ['kl_matrix_t1', 'kl_matrix_t06', 'tv_matrix_t1', 'tv_matrix_t06', 'normalized_kl']:
         if metric in response_data:
             metrics.append(metric)
 
@@ -279,15 +279,71 @@ def load_intervention(
             np.log(np.maximum(prompt_prob_after_t06, eps))
         )
 
+    # Add normalized KL metric based on kl_matrix_t1
+    if 'kl_matrix_t1' in result['response_intervention']:
+        EPS = 1e-8  # Small epsilon to avoid zero divisions
+        
+        # Get COPIES of the raw KL matrices at token level (don't modify originals!)
+        response_kl = result['response_intervention']['kl_matrix_t1'].copy()
+        prompt_kl = result['prompt_intervention']['kl_matrix_t1'].copy() if 'prompt_intervention' in result else None
+        
+        # Get boundaries
+        sentence_boundaries = result['metadata']['sentence_boundaries']
+        prompt_boundaries = result['metadata'].get('prompt_boundaries', [])
+        
+        n_tokens = response_kl.shape[1]
+        n_response_sentences = len(sentence_boundaries)
+        n_prompt_components = len(prompt_boundaries) if prompt_boundaries else 0
+        
+        # Create normalized versions at token level
+        normalized_response_kl = np.zeros_like(response_kl)
+        normalized_prompt_kl = np.zeros_like(prompt_kl) if prompt_kl is not None else None
+        
+        # For each target token, normalize all influences
+        for target_token in range(n_tokens):
+            influences = []
+            source_info = []
+            
+            # Collect influences from prompt components
+            if prompt_kl is not None:
+                for prompt_idx in range(prompt_kl.shape[0]):
+                    value = prompt_kl[prompt_idx, target_token] + EPS
+                    influences.append(value)
+                    source_info.append(('prompt', prompt_idx))
+            
+            # Collect influences from response sentences (only earlier tokens)
+            for source_idx in range(min(target_token, response_kl.shape[0])):
+                value = response_kl[source_idx, target_token] + EPS
+                influences.append(value)
+                source_info.append(('response', source_idx))
+            
+            # Normalize if we have influences
+            if influences:
+                total = sum(influences)
+                normalized_values = [inf / total for inf in influences]
+                
+                # Assign normalized values back
+                for (src_type, src_idx), norm_val in zip(source_info, normalized_values):
+                    if src_type == 'prompt' and normalized_prompt_kl is not None:
+                        normalized_prompt_kl[src_idx, target_token] = norm_val
+                    elif src_type == 'response':
+                        normalized_response_kl[src_idx, target_token] = norm_val
+        
+        # Add to result
+        result['response_intervention']['normalized_kl'] = normalized_response_kl
+        if 'prompt_intervention' in result and normalized_prompt_kl is not None:
+            result['prompt_intervention']['normalized_kl'] = normalized_prompt_kl
+
     # Add sentence-to-sentence interaction matrices for all metrics
     sentence_interactions = {}
-    for metric in ['kl_matrix_t1', 'kl_matrix_t06', 'tv_matrix_t1', 'tv_matrix_t06', 'nll_changes_t1', 'nll_changes_t06']:
+    metrics_to_process = ['kl_matrix_t1', 'kl_matrix_t06', 'tv_matrix_t1', 'tv_matrix_t06', 'nll_changes_t1', 'nll_changes_t06', 'normalized_kl']
+    for metric in metrics_to_process:
         if metric in result['response_intervention']:
             sentence_interactions[f'sentence_{metric}'] = create_sentence_to_sentence_matrix(result, metric)
 
     # Add prompt-to-sentence interaction matrices if available
     if 'prompt_intervention' in result:
-        for metric in ['kl_matrix_t1', 'kl_matrix_t06', 'tv_matrix_t1', 'tv_matrix_t06', 'nll_changes_t1', 'nll_changes_t06']:
+        for metric in metrics_to_process:
             if metric in result['prompt_intervention']:
                 sentence_interactions[f'prompt_{metric}'] = create_prompt_to_sentence_matrix(result, metric)
 
@@ -315,15 +371,47 @@ def load_all_cached_interventions(
     Returns:
         Dict with structure: {(problem_num, is_correct): result_dict}
     """
-    # Import here to avoid circular imports
-    sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'whitebox-analyses', 'scripts'))
-    from prep_suppression_mtxs import get_all_problem_numbers
-
     results = {}
 
     print(f"Loading intervention type: cumulative={cumulative}, amplify={amplify}, factor={amplify_factor}")
-
-    for problem_num, is_correct in tqdm(get_all_problem_numbers(model_name, include_incorrect)):
+    
+    # Directly scan the cache directory for available cached results
+    cache_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'whitebox-analyses', 'nathan_scripts', '.pkljar',
+        'detailed_interaction_analysis', 'analyze_intervention_detailed'
+    )
+    
+    if not os.path.exists(cache_dir):
+        print(f"Cache directory not found: {cache_dir}")
+        return results
+    
+    # Parse cached files to get problem numbers and is_correct values
+    problem_list = []
+    for filename in os.listdir(cache_dir):
+        if filename.endswith('.pkl') and not filename.endswith('.lock'):
+            # Parse filename to extract parameters
+            # Format: _amp-False__amp-2.0__cum-False__dev-auto__is_-False__mod-llama-8b__pro-1591_.pkl
+            if f'__mod-{model_name}__' in filename:
+                # Check amplify parameter (appears as _amp-{value}__ at the start)
+                if f'_amp-{amplify}__' in filename and f'__cum-{cumulative}__' in filename:
+                    # Extract problem number
+                    pro_match = filename.split('__pro-')[1].split('_')[0]
+                    problem_num = int(pro_match)
+                    
+                    # Extract is_correct
+                    is_match = '__is_-True__' in filename
+                    
+                    # Filter based on include_incorrect
+                    if is_match or include_incorrect:
+                        problem_list.append((problem_num, is_match))
+    
+    # Remove duplicates and sort
+    problem_list = sorted(list(set(problem_list)))
+    
+    print(f"Found {len(problem_list)} cached problems")
+    
+    for problem_num, is_correct in tqdm(problem_list):
         # Check if cached
         if is_intervention_cached(
             problem_num=problem_num,
